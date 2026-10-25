@@ -10,7 +10,8 @@
 			},
 			"ubus": {
 				"file": [ "list", "read" ],
-				"luci-rpc": [ "getDHCPLeases" ],
+				"luci-rpc": [ "getDHCPLeases", "getHostHints" ],
+				"iwinfo": [ "assoclist" ],
 				"network.wireless": [ "status" ],
 				"network.device": [ "status" ],
 				"network.interface": [ "status", "dump" ],

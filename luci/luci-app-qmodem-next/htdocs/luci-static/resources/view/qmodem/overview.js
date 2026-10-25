@@ -618,25 +618,98 @@ return view.extend({
 		}
 
 		function updateDevices() {
-			L.resolveDefault(callLuciDHCPLeases(), {}).then(function(res) {
-				/* luci-rpc getDHCPLeases answers with a dhcp_leases array of
-				   { hostname, ipaddr, macaddr } records like luci-mod-dashboard
-				   expects */
-				var list = (res && Array.isArray(res.dhcp_leases)) ? res.dhcp_leases : [],
-					rows = [], n = 0;
-				list.forEach(function(d) {
+			/* merge dhcp leases with the wifi association lists like
+			   luci-mod-dashboard: stations contribute signal strength and
+			   transferred traffic, leases contribute hostname and address */
+			var stations = [], hints = null;
+
+			L.resolveDefault(network.getHostHints(), null).then(function(h) {
+				hints = h;
+				return L.resolveDefault(network.getWifiNetworks(), []);
+			}).catch(function() { return []; }).then(function(nets) {
+				return Promise.all(nets.map(function(net) {
+					return L.resolveDefault(net.getAssocList(), []).then(function(list) {
+						return { ssid: net.getActiveSSID(), list: list };
+					}).catch(function() { return { ssid: null, list: [] }; });
+				}));
+			}).then(function(assocs) {
+				assocs.forEach(function(a) {
+					a.list.forEach(function(bss) {
+						if (bss && bss.mac)
+							stations.push({ mac: bss.mac, signal: bss.signal,
+								noise: bss.noise, ssid: a.ssid,
+								tx: bss.tx ? bss.tx.bytes : null,
+								rx: bss.rx ? bss.rx.bytes : null });
+					});
+				});
+				return L.resolveDefault(callLuciDHCPLeases(), {});
+			}).then(function(res) {
+				var leases = Array.isArray(res.dhcp_leases) ? res.dhcp_leases : [],
+					byMac = {}, order = [], rows = [], n = 0;
+
+				function touch(mac) {
+					var k = String(mac).toLowerCase();
+					if (!byMac[k]) {
+						byMac[k] = { mac: String(mac).toUpperCase() };
+						order.push(k);
+					}
+					return byMac[k];
+				}
+
+				stations.forEach(function(s) {
+					var e = touch(s.mac);
+					e.signal = s.signal;
+					e.noise = s.noise;
+					e.tx = s.tx;
+					e.rx = s.rx;
+					e.ssid = s.ssid;
+				});
+				leases.forEach(function(d) {
 					if (!d || (!d.ipaddr && !d.hostname))
 						return;
+					var e = touch(d.macaddr || '00:00:00:00:00:00');
+					if (d.hostname)
+						e.hostname = d.hostname;
+					if (d.ipaddr)
+						e.ip = d.ipaddr;
+				});
+
+				/* same quality formula as luci-mod-dashboard */
+				function sigCell(e) {
+					if (e.signal == null)
+						return E('td', { 'class': 'td' }, '--');
+					var noise = (typeof e.noise === 'number') ? e.noise : -90,
+						q = 100 * ((e.signal - noise) / (-30 - noise));
+					q = Math.max(0, Math.min(100, Math.round(q)));
+					return E('td', { 'class': 'td' }, [
+						E('span', { 'style': 'color:' + (q < 25 ? '#c94040' :
+							(q < 50 ? '#e0a020' : '#23b45a')) },
+							e.signal + ' dBm（' + q + '%）')
+					]);
+				}
+
+				function flowCell(e) {
+					if (e.tx == null && e.rx == null)
+						return E('td', { 'class': 'td' }, '--');
+					return E('td', { 'class': 'td' },
+						'↓ ' + '%.2mB'.format(e.tx || 0) + '　↑ ' + '%.2mB'.format(e.rx || 0));
+				}
+
+				order.forEach(function(k) {
+					var e = byMac[k],
+						name = e.hostname || (hints ? hints.getHostnameByMACAddr(e.mac) : null);
 					rows.push(E('tr', { 'class': 'tr cbi-rowstyle-' + (n % 2 ? 2 : 1) }, [
-						E('td', { 'class': 'td' }, d.hostname || '(未命名)'),
-						E('td', { 'class': 'td' }, d.ipaddr || '--'),
-						E('td', { 'class': 'td' }, d.macaddr || '--')
+						E('td', { 'class': 'td' }, name || '(未命名)'),
+						E('td', { 'class': 'td' }, e.ip || '--'),
+						E('td', { 'class': 'td' }, e.mac),
+						sigCell(e),
+						flowCell(e)
 					]));
 					n++;
 				});
 				if (!rows.length)
 					rows.push(E('tr', { 'class': 'tr' }, [
-						E('td', { 'class': 'td', 'colspan': '3', 'style': 'text-align:center;color:#888' }, '無連線裝置')
+						E('td', { 'class': 'td', 'colspan': '5', 'style': 'text-align:center;color:#888' }, '無連線裝置')
 					]));
 				fillTbody(refs.devBody, rows);
 				refs.devCount.textContent = '共 ' + n + ' 台裝置';
@@ -882,7 +955,9 @@ return view.extend({
 					E('tr', { 'class': 'tr' }, [
 						E('th', { 'class': 'th' }, '主機名稱'),
 						E('th', { 'class': 'th' }, 'IP 位址'),
-						E('th', { 'class': 'th' }, 'MAC')
+						E('th', { 'class': 'th' }, 'MAC'),
+						E('th', { 'class': 'th' }, '訊號強度'),
+						E('th', { 'class': 'th' }, '已使用流量')
 					])
 				]),
 				refs.devBody
