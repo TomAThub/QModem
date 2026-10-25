@@ -478,6 +478,57 @@ return view.extend({
 			}).catch(function() { });
 		}
 
+		function updateNet() {
+			if (!cur)
+				return;
+
+			var names = [];
+			if (cur.ifname)
+				names.push(cur.ifname);
+			if (cur.id && cur.id !== cur.ifname)
+				names.push(cur.id);
+
+			function tryNext(i) {
+				if (i >= names.length)
+					return Promise.resolve(null);
+				return callInterfaceStatus(names[i]).then(function(st) {
+					if (st && (st['ipv4-address'] || st.route || st['dns-server']))
+						return st;
+					return tryNext(i + 1);
+				}).catch(function() { return tryNext(i + 1); });
+			}
+
+			tryNext(0).then(function(st) {
+				var ip = null, gw = null, dns = [], ip6 = [];
+
+				if (st) {
+					if (st['ipv4-address'] && st['ipv4-address'].length)
+						ip = st['ipv4-address'][0].address + '/' + st['ipv4-address'][0].mask;
+					if (st.route)
+						st.route.forEach(function(r) {
+							if (gw == null && r && r.target === '0.0.0.0' && r.mask === 0 && r.gateway)
+								gw = r.gateway;
+						});
+					if (st['dns-server'])
+						st['dns-server'].forEach(function(d) {
+							var a = (typeof d === 'string') ? d : (d && d.address);
+							if (a)
+								dns.push(a);
+						});
+					if (st['ipv6-address'])
+						st['ipv6-address'].forEach(function(a) {
+							if (a && a.address)
+								ip6.push(a.address + '/' + a.mask);
+						});
+				}
+
+				setField(refs.fIp, 'IP 位址', ip);
+				setField(refs.fGw, '預設閘道', gw);
+				setField(refs.fDns, 'DNS 伺服器', dns.length ? dns.join('、') : null);
+				setField(refs.fIp6, 'IPv6 位址', ip6.length ? ip6.join('、') : null);
+			}).catch(function() { });
+		}
+
 		function updateModem() {
 			if (!cur)
 				return;
@@ -664,6 +715,16 @@ return view.extend({
 			card('裝置溫度', [refs.tempCard, refs.fanCard])
 		]));
 
+		refs.fIp = field('IP 位址', null);
+		refs.fGw = field('預設閘道', null);
+		refs.fDns = field('DNS 伺服器', null);
+		refs.fIp6 = field('IPv6 位址', null);
+
+		container.appendChild(E('div', { 'class': 'cpe-section' }, [
+			E('h3', '網路連線資訊'),
+			E('div', { 'class': 'cpe-fields' }, [refs.fIp, refs.fGw, refs.fDns, refs.fIp6])
+		]));
+
 		var speed = sparkSvg();
 		refs.sparkDown = speed.getElementsByTagName('polyline')[0];
 		refs.sparkUp = speed.getElementsByTagName('polyline')[1];
@@ -749,6 +810,7 @@ return view.extend({
 			updateCopyright();
 			updateModem();
 			updateSpeed();
+			updateNet();
 		}
 
 		select.addEventListener('change', function() { selectModem(select.value); });
@@ -759,9 +821,11 @@ return view.extend({
 		poll.add(updateSpeed, 2);
 		poll.add(updateModem, 5);
 		poll.add(updateThermal, 5);
+		poll.add(updateNet, 5);
 		updateModem();
 		updateSpeed();
 		updateThermal();
+		updateNet();
 
 		return container;
 	},
