@@ -181,7 +181,7 @@ return view.extend({
 						return { band: f >= 5 ? '5g' : '24g', list: l };
 					}).catch(function() { return { band: '24g', list: [] }; });
 				})).then(function(assocs) {
-					renderTopo(r[0], r[1], assocs, r[4], r[5], r[6], dumpErr, leaseErr, r[7], r[8], hintErr);
+					renderTopo(r[1], r[2], assocs, r[4], r[5], r[6], dumpErr, leaseErr, r[7], r[8], hintErr);
 				});
 			}).catch(function() { });
 		}
@@ -336,7 +336,7 @@ return view.extend({
 				fshape = fbDev ? ((devStat && devStat[fbDev]) ?
 					(devStat[fbDev]['ipv4-address'] ? 'dev有IP' : 'dev無IP') : 'dev缺') : '-';
 
-			refs.topoDbg.textContent = 'r48 · WAN: ' + (wan ? wan.interface : '(未找到)') +
+			refs.topoDbg.textContent = 'r49 · WAN: ' + (wan ? wan.interface : '(未找到)') +
 				' · up=' + (wan ? String(wan.up) : '-') +
 				' · IPv4: ' + (wanIp || '-') +
 				' · 撥號: ' + (truthy(dial && dial.running) ? '已撥號' : '未撥號') +
