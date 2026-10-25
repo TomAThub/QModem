@@ -12,10 +12,11 @@ document.head.appendChild(E('link', {
 	'href': L.resource('qmodem/cpe-dashboard.css')
 }));
 
-var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] } });
-var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status', expect: { '': {} } });
-var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} } });
-var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {} });
+var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] }, reject: true });
+var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status', expect: { '': {} }, reject: true });
+var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} }, reject: true });
+var callHostHints = rpc.declare({ object: 'luci-rpc', method: 'getHostHints', expect: { '': {} }, reject: true });
+var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {}, reject: true });
 
 function truthy(v) {
 	return v === true || v === 1 || v === '1' || v === 'true';
@@ -111,8 +112,8 @@ return view.extend({
 	title: '網路拓撲',
 
 	load: function() {
-		return uci.load('qmodem').then(function() {
-			var cur = null;
+		return Promise.all([uci.load('qmodem'), uci.load('dhcp').catch(function() { })]).then(function() {
+			var cur = null, hosts = {};
 			/* mirror the overview: it uses the first modem-device section
 			   regardless of at_port, so both pages resolve the same WAN */
 			uci.sections('qmodem', 'modem-device', function(s) {
@@ -121,18 +122,24 @@ return view.extend({
 					cur = { id: s['.name'], ifname: ifn, name: ifn.toUpperCase() };
 				}
 			});
-			return cur;
+			/* statically configured host names give names to wired clients
+			   even when the DHCP lease call is unavailable */
+			uci.sections('dhcp', 'host', function(s) {
+				if (s.mac && s.name)
+					hosts[String(s.mac).toLowerCase()] = s.name;
+			});
+			return { modem: cur, hosts: hosts };
 		});
 	},
 
-	render: function(modem) {
-		if (!modem)
+	render: function(data) {
+		if (!data || !data.modem)
 			return E('div', { 'class': 'cbi-map' }, [
 				E('h3', '網路拓撲'),
 				E('div', { 'class': 'alert-message warning' }, '未找到已啟用的 qmodem 模組設定，請先安裝 qmodem 並完成設定。')
 			]);
 
-		var cur = modem, topoHost = null, refs = {};
+		var cur = data.modem, staticHosts = data.hosts || {}, topoHost = null, refs = {};
 
 		function topoName() {
 			if (topoHost != null)
@@ -147,7 +154,7 @@ return view.extend({
 		}
 
 		function updateTopo() {
-			var dumpErr = null, leaseErr = null;
+			var dumpErr = null, leaseErr = null, hintErr = null;
 
 			function errStr(e) {
 				return String(e && e.message ? e.message : e);
@@ -158,7 +165,7 @@ return view.extend({
 				callInterfaceDump().catch(function(e) { dumpErr = errStr(e); return []; }),
 				L.resolveDefault(callLuciDHCPLeases().catch(function(e) { leaseErr = errStr(e); }), {}),
 				L.resolveDefault(network.getWifiNetworks(), []).catch(function() { return []; }),
-				L.resolveDefault(network.getHostHints(), null),
+				L.resolveDefault(callHostHints().catch(function(e) { hintErr = errStr(e); }), {}),
 				L.resolveDefault(callDialStatus(cur.id), {}),
 				fs.read('/proc/net/arp').then(function(b) { return String(b); }).catch(function() { return ''; }),
 				fs.read('/proc/net/route').then(function(b) { return String(b); }).catch(function() { return ''; }),
@@ -170,12 +177,12 @@ return view.extend({
 						return { band: f >= 5 ? '5g' : '24g', list: l };
 					}).catch(function() { return { band: '24g', list: [] }; });
 				})).then(function(assocs) {
-					renderTopo(r[0], r[1], assocs, r[4], r[5], r[6], dumpErr, leaseErr, r[7], r[8]);
+					renderTopo(r[0], r[1], assocs, r[4], r[5], r[6], dumpErr, leaseErr, r[7], r[8], hintErr);
 				});
 			}).catch(function() { });
 		}
 
-		function renderTopo(d, leaseRes, assocs, hints, dial, arpRaw, dumpErr, leaseErr, routeRaw, devStat) {
+		function renderTopo(d, leaseRes, assocs, hints, dial, arpRaw, dumpErr, leaseErr, routeRaw, devStat, hintErr) {
 			var list = Array.isArray(d) ? d : ((d && d.interface) || []),
 				wan = null, lan = null;
 
@@ -296,9 +303,15 @@ return view.extend({
 			});
 			stations.forEach(function(s) { groups[s.band].push(s); });
 
-			/* vendor name chain: hostname, then the LuCI host hints, then IP/MAC */
+			/* vendor name chain: hostname, then static DHCP names, then the
+			   LuCI host hints, then IP/MAC */
+			function hintName(mac) {
+				var h = (hints || {})[mac] || (hints || {})[String(mac).toUpperCase()];
+				return (h && h.name) ? String(h.name) : null;
+			}
+
 			function devName(x) {
-				return x.hostname || (hints ? hints.getHostnameByMACAddr(x.mac) : null) ||
+				return x.hostname || staticHosts[x.mac] || hintName(x.mac) ||
 					x.ip || x.mac || '(未命名)';
 			}
 
@@ -322,6 +335,7 @@ return view.extend({
 				' · ARP: ' + Object.keys(seenMac).length +
 				(dumpErr ? ' · dump 錯誤: ' + dumpErr : '') +
 				(leaseErr ? ' · 租約錯誤: ' + leaseErr : '') +
+				(hintErr ? ' · hints 錯誤: ' + hintErr : '') +
 				(fbDev ? ' · 回退: 路由表 ' + fbDev : '');
 
 			var kids = [{ id: 'internet', name: 'Internet', type: 'internet',

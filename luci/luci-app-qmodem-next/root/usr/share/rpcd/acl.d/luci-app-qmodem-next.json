@@ -27,7 +27,7 @@
 				"rc" : [ "list" ,"init"],
 				"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
 			},
-			"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard", "wireless", "network", "ddns" ]
+			"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard", "wireless", "network", "ddns", "dhcp" ]
 		},
 		"write": {
 			"ubus": {
