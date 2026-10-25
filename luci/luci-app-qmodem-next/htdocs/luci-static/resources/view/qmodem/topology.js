@@ -13,6 +13,7 @@ document.head.appendChild(E('link', {
 }));
 
 var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] } });
+var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status', expect: { '': {} } });
 var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} } });
 var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {} });
 
@@ -70,9 +71,11 @@ function topoLayout(root, mbps) {
 		(byDepth[f.depth] = byDepth[f.depth] || []).push(f);
 	});
 
-	var pos = {}, nodes = [];
+	var pos = {}, nodes = [], maxN = 0;
 	Object.keys(byDepth).forEach(function(d) {
 		var q = byDepth[d], n = q.length, dr = maxDepth === 0 ? 0 : d / maxDepth;
+		if (n > maxN)
+			maxN = n;
 		q.forEach(function(f, ge) {
 			var ie = n <= 1 ? 0.5 : ge / (n - 1);
 			pos[f.key] = { node: f.node, order: f.order, depth: +d,
@@ -101,7 +104,7 @@ function topoLayout(root, mbps) {
 	});
 
 	nodes.sort(function(a, b) { return a.order - b.order; });
-	return { nodes: nodes, edges: edges };
+	return { nodes: nodes, edges: edges, maxN: maxN };
 }
 
 return view.extend({
@@ -157,7 +160,9 @@ return view.extend({
 				L.resolveDefault(network.getWifiNetworks(), []).catch(function() { return []; }),
 				L.resolveDefault(network.getHostHints(), null),
 				L.resolveDefault(callDialStatus(cur.id), {}),
-				fs.read('/proc/net/arp').then(function(b) { return String(b); }).catch(function() { return ''; })
+				fs.read('/proc/net/arp').then(function(b) { return String(b); }).catch(function() { return ''; }),
+				fs.read('/proc/net/route').then(function(b) { return String(b); }).catch(function() { return ''; }),
+				L.resolveDefault(callDeviceStatus().catch(function() { return {}; }), {})
 			]).then(function(r) {
 				return Promise.all(r[3].map(function(net) {
 					var f = parseFloat(net.getFrequency() || '0');
@@ -165,12 +170,12 @@ return view.extend({
 						return { band: f >= 5 ? '5g' : '24g', list: l };
 					}).catch(function() { return { band: '24g', list: [] }; });
 				})).then(function(assocs) {
-					renderTopo(r[0], r[1], assocs, r[4], r[5], r[6], dumpErr, leaseErr);
+					renderTopo(r[0], r[1], assocs, r[4], r[5], r[6], dumpErr, leaseErr, r[7], r[8]);
 				});
 			}).catch(function() { });
 		}
 
-		function renderTopo(d, leaseRes, assocs, hints, dial, arpRaw, dumpErr, leaseErr) {
+		function renderTopo(d, leaseRes, assocs, hints, dial, arpRaw, dumpErr, leaseErr, routeRaw, devStat) {
 			var list = Array.isArray(d) ? d : ((d && d.interface) || []),
 				wan = null, lan = null;
 
@@ -209,6 +214,27 @@ return view.extend({
 					if (!wan && i && i.interface === 'wan')
 						wan = i;
 				});
+
+			/* when the netifd dump came back empty the kernel routing table
+			   still names the egress device and network.device status may
+			   carry its address, so keep the Internet node alive from those */
+			var fbDev = null, fbM = 1e9;
+			if (!wan)
+				String(routeRaw || '').split('\n').slice(1).forEach(function(l) {
+					var p = l.trim().split(/\s+/);
+					if (p.length < 8 || p[1] !== '00000000' || p[7] !== '00000000')
+						return;
+					var m = parseInt(p[6], 10) || 0;
+					if (m < fbM) {
+						fbM = m;
+						fbDev = p[0];
+					}
+				});
+			if (fbDev) {
+				var fds = (devStat || {})[fbDev] || {};
+				wan = { interface: fbDev, device: fbDev, up: true,
+					'ipv4-address': Array.isArray(fds['ipv4-address']) ? fds['ipv4-address'] : [] };
+			}
 
 			function firstAddr(e, key) {
 				var a = e && e[key];
@@ -295,7 +321,8 @@ return view.extend({
 				' · 租約: ' + Object.keys(leaseByMac).length +
 				' · ARP: ' + Object.keys(seenMac).length +
 				(dumpErr ? ' · dump 錯誤: ' + dumpErr : '') +
-				(leaseErr ? ' · 租約錯誤: ' + leaseErr : '');
+				(leaseErr ? ' · 租約錯誤: ' + leaseErr : '') +
+				(fbDev ? ' · 回退: 路由表 ' + fbDev : '');
 
 			var kids = [{ id: 'internet', name: 'Internet', type: 'internet',
 					status: wanUp ? 'online' : 'offline',
@@ -316,7 +343,7 @@ return view.extend({
 				/* netifd maintains rx_rate/tx_rate (bytes per second) per interface */
 				rate = (wan && wan.statistics) ? ((Number(wan.statistics.rx_rate) || 0) + (Number(wan.statistics.tx_rate) || 0)) : 0,
 				lay = topoLayout(root, rate / 1e6),
-				W = 1000, H = 420, svg = [];
+				W = 1000, H = Math.max(420, 45 * (lay.maxN - 1) + 60), svg = [];
 
 			function px(p) { return [p[0] / 100 * W, p[1] / 100 * H]; }
 			function n2(v) { return Math.round(v * 10) / 10; }
