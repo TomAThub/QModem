@@ -14,6 +14,11 @@ document.head.appendChild(E('link', {
 
 var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] } });
 var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} } });
+var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {} });
+
+function truthy(v) {
+	return v === true || v === 1 || v === '1' || v === 'true';
+}
 
 /* ---- network topology, recreating the HigoOS NetworkTopology chart ---- */
 var TOPO_ICONS = {
@@ -142,7 +147,8 @@ return view.extend({
 				callInterfaceDump().catch(function() { return []; }),
 				L.resolveDefault(callLuciDHCPLeases(), {}),
 				L.resolveDefault(network.getWifiNetworks(), []).catch(function() { return []; }),
-				L.resolveDefault(network.getHostHints(), null)
+				L.resolveDefault(network.getHostHints(), null),
+				L.resolveDefault(callDialStatus(cur.id), {})
 			]).then(function(r) {
 				return Promise.all(r[3].map(function(net) {
 					var f = parseFloat(net.getFrequency() || '0');
@@ -150,12 +156,12 @@ return view.extend({
 						return { band: f >= 5 ? '5g' : '24g', list: l };
 					}).catch(function() { return { band: '24g', list: [] }; });
 				})).then(function(assocs) {
-					renderTopo(r[0], r[1], assocs, r[4]);
+					renderTopo(r[0], r[1], assocs, r[4], r[5]);
 				});
 			}).catch(function() { });
 		}
 
-		function renderTopo(d, leaseRes, assocs, hints) {
+		function renderTopo(d, leaseRes, assocs, hints, dial) {
 			var list = Array.isArray(d) ? d : ((d && d.interface) || []),
 				wan = null, lan = null;
 
@@ -230,9 +236,21 @@ return view.extend({
 					status: 'online', ip: x.ip, mac: x.mac };
 			}
 
+			/* the modem daemon's dial state is the authoritative uplink signal;
+			   fall back to the netifd entry being up or carrying an address */
+			var wanIp = firstAddr(wan, 'ipv4-address'),
+				wanUp = truthy(dial && dial.running) ||
+					!!(wan && (wan.up === true || (wan['ipv4-address'] || []).length));
+
+			refs.topoDbg.textContent = 'WAN: ' + (wan ? wan.interface : '(未找到)') +
+				' · up=' + (wan ? String(wan.up) : '-') +
+				' · IPv4: ' + (wanIp || '-') +
+				' · 撥號: ' + (truthy(dial && dial.running) ? '已撥號' : '未撥號') +
+				' · dump 介面數: ' + list.length;
+
 			var kids = [{ id: 'internet', name: 'Internet', type: 'internet',
-					status: (wan && (wan.up === true || (wan['ipv4-address'] || []).length)) ? 'online' : 'offline',
-					ip: firstAddr(wan, 'ipv4-address') }];
+					status: wanUp ? 'online' : 'offline',
+					ip: wanIp }];
 
 			if (wired.length)
 				kids.push({ id: 'wired', name: '有線設備 (' + wired.length + ')', type: 'wired',
@@ -320,6 +338,7 @@ return view.extend({
 
 		refs.topoSvg = E('div', { 'style': 'width:100%' });
 		refs.topoTip = E('div', { 'style': 'position:absolute;z-index:30;display:none;pointer-events:none;white-space:nowrap;background:rgba(15,23,42,0.9);border:1px solid #334155;border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;color:#f1f5f9' });
+		refs.topoDbg = E('div', { 'style': 'margin-top:6px;font-size:12px;color:#999' });
 		refs.topoBox = E('div', { 'style': 'position:relative;width:100%' }, [refs.topoSvg, refs.topoTip]);
 
 		poll.add(updateTopo, 10);
@@ -328,7 +347,8 @@ return view.extend({
 		return E('div', { 'class': 'cpe-wrap' }, [
 			E('div', { 'class': 'cpe-section' }, [
 				E('h3', '網路拓撲'),
-				refs.topoBox
+				refs.topoBox,
+				refs.topoDbg
 			])
 		]);
 	},
