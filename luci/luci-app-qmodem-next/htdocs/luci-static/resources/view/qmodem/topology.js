@@ -12,7 +12,7 @@ document.head.appendChild(E('link', {
 	'href': L.resource('qmodem/cpe-dashboard.css')
 }));
 
-var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] }, reject: true });
+var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', reject: true });
 var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status', expect: { '': {} }, reject: true });
 var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} }, reject: true });
 var callHostHints = rpc.declare({ object: 'luci-rpc', method: 'getHostHints', expect: { '': {} }, reject: true });
@@ -326,11 +326,20 @@ return view.extend({
 				wanUp = truthy(dial && dial.running) ||
 					!!(wan && (wan.up === true || (wan['ipv4-address'] || []).length));
 
+			var dshape = (d == null) ? 'null' : (Array.isArray(d) ? '陣列' + d.length :
+					(typeof d === 'object' ? (Object.keys(d).join('+') || '空物件') : String(d))),
+				lshape = (leaseRes && typeof leaseRes === 'object') ? (Object.keys(leaseRes).join('+') || '空物件') : String(leaseRes),
+				fshape = fbDev ? ((devStat && devStat[fbDev]) ?
+					(devStat[fbDev]['ipv4-address'] ? 'dev有IP' : 'dev無IP') : 'dev缺') : '-';
+
 			refs.topoDbg.textContent = 'WAN: ' + (wan ? wan.interface : '(未找到)') +
 				' · up=' + (wan ? String(wan.up) : '-') +
 				' · IPv4: ' + (wanIp || '-') +
 				' · 撥號: ' + (truthy(dial && dial.running) ? '已撥號' : '未撥號') +
 				' · dump 介面數: ' + list.length +
+				' · dump 回應: ' + dshape +
+				' · 租約鍵: ' + lshape +
+				' · devStat: ' + fshape +
 				' · 租約: ' + Object.keys(leaseByMac).length +
 				' · ARP: ' + Object.keys(seenMac).length +
 				(dumpErr ? ' · dump 錯誤: ' + dumpErr : '') +
