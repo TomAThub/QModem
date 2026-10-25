@@ -17,6 +17,17 @@
 			"acl": [ "luci-app-qmodem-next" ]
 		}
 	},
+	"admin/cpe/topology": {
+		"title": "網路拓撲",
+		"order": 1.5,
+		"action": {
+			"type": "view",
+			"path": "qmodem/topology"
+		},
+		"depends": {
+			"acl": [ "luci-app-qmodem-next" ]
+		}
+	},
 	"admin/cpe/network_config": {
 		"title": "網路設定",
 		"order": 2,
