@@ -7,7 +7,8 @@
 				"/sys/class/hwmon/*": [ "list" ],
 				"/sys/class/hwmon/*/*": [ "read" ],
 				"/proc/net/if_inet6": [ "read" ],
-				"/proc/sys/kernel/hostname": [ "read" ]
+				"/proc/sys/kernel/hostname": [ "read" ],
+				"/proc/net/arp": [ "read" ]
 			},
 			"ubus": {
 				"file": [ "list", "read" ],

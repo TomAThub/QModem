@@ -144,13 +144,20 @@ return view.extend({
 		}
 
 		function updateTopo() {
+			var dumpErr = null, leaseErr = null;
+
+			function errStr(e) {
+				return String(e && e.message ? e.message : e);
+			}
+
 			Promise.all([
 				topoName(),
-				callInterfaceDump().catch(function() { return []; }),
-				L.resolveDefault(callLuciDHCPLeases(), {}),
+				callInterfaceDump().catch(function(e) { dumpErr = errStr(e); return []; }),
+				L.resolveDefault(callLuciDHCPLeases().catch(function(e) { leaseErr = errStr(e); }), {}),
 				L.resolveDefault(network.getWifiNetworks(), []).catch(function() { return []; }),
 				L.resolveDefault(network.getHostHints(), null),
-				L.resolveDefault(callDialStatus(cur.id), {})
+				L.resolveDefault(callDialStatus(cur.id), {}),
+				fs.read('/proc/net/arp').then(function(b) { return String(b); }).catch(function() { return ''; })
 			]).then(function(r) {
 				return Promise.all(r[3].map(function(net) {
 					var f = parseFloat(net.getFrequency() || '0');
@@ -158,12 +165,12 @@ return view.extend({
 						return { band: f >= 5 ? '5g' : '24g', list: l };
 					}).catch(function() { return { band: '24g', list: [] }; });
 				})).then(function(assocs) {
-					renderTopo(r[0], r[1], assocs, r[4], r[5]);
+					renderTopo(r[0], r[1], assocs, r[4], r[5], r[6], dumpErr, leaseErr);
 				});
 			}).catch(function() { });
 		}
 
-		function renderTopo(d, leaseRes, assocs, hints, dial) {
+		function renderTopo(d, leaseRes, assocs, hints, dial, arpRaw, dumpErr, leaseErr) {
 			var list = Array.isArray(d) ? d : ((d && d.interface) || []),
 				wan = null, lan = null;
 
@@ -241,6 +248,26 @@ return view.extend({
 				}
 				wired.push({ mac: k, hostname: e.hostname, ip: e.ip });
 			});
+
+			/* like the vendor backend: the ARP table also reveals wired clients
+			   with static IPs that never asked for a DHCP lease */
+			var lanDev = lan ? (lan.l3_device || lan.device || null) : null,
+				wanDev = wan ? (wan.l3_device || wan.device || null) : null,
+				seenMac = {};
+
+			wired.forEach(function(w) { seenMac[w.mac] = true; });
+			String(arpRaw || '').split('\n').slice(1).forEach(function(l) {
+				var p = l.trim().split(/\s+/);
+				if (p.length < 6 || !p[3] || p[3] === '(incomplete)' || p[5] === 'lo')
+					return;
+				var k = p[3].toLowerCase();
+				if (stMac[k] || seenMac[k])
+					return;
+				if (lanDev ? p[5] !== lanDev : (wanDev && p[5] === wanDev))
+					return;
+				seenMac[k] = true;
+				wired.push({ mac: k, hostname: null, ip: p[0] });
+			});
 			stations.forEach(function(s) { groups[s.band].push(s); });
 
 			/* vendor name chain: hostname, then the LuCI host hints, then IP/MAC */
@@ -264,7 +291,11 @@ return view.extend({
 				' · up=' + (wan ? String(wan.up) : '-') +
 				' · IPv4: ' + (wanIp || '-') +
 				' · 撥號: ' + (truthy(dial && dial.running) ? '已撥號' : '未撥號') +
-				' · dump 介面數: ' + list.length;
+				' · dump 介面數: ' + list.length +
+				' · 租約: ' + Object.keys(leaseByMac).length +
+				' · ARP: ' + Object.keys(seenMac).length +
+				(dumpErr ? ' · dump 錯誤: ' + dumpErr : '') +
+				(leaseErr ? ' · 租約錯誤: ' + leaseErr : '');
 
 			var kids = [{ id: 'internet', name: 'Internet', type: 'internet',
 					status: wanUp ? 'online' : 'offline',
