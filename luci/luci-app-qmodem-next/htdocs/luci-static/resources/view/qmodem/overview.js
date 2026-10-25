@@ -498,7 +498,8 @@ return view.extend({
 			   with a nexthop field, kernel IPv6 addresses are read from
 			   /proc/net/if_inet6 as a fallback */
 			callInterfaceDump().then(function(d) {
-				var list = (d && d.interface) || [], st = null;
+				/* rpc expect unwrapping already yields the interface array */
+				var list = Array.isArray(d) ? d : ((d && d.interface) || []), st = null;
 				list.forEach(function(i) {
 					if (!st && (i.interface === cur.ifname || i.interface === cur.id))
 						st = i;
@@ -572,20 +573,21 @@ return view.extend({
 
 		function updateDevices() {
 			L.resolveDefault(callLuciDHCPLeases(), {}).then(function(res) {
-				var rows = [], n = 0;
-				for (var mac in res) {
-					if (!res.hasOwnProperty(mac) || !res[mac])
-						continue;
-					var d = res[mac];
-					if (!d.ipv4 && !d.hostname)
-						continue;
+				/* luci-rpc getDHCPLeases answers with a dhcp_leases array of
+				   { hostname, ipaddr, macaddr } records like luci-mod-dashboard
+				   expects */
+				var list = (res && Array.isArray(res.dhcp_leases)) ? res.dhcp_leases : [],
+					rows = [], n = 0;
+				list.forEach(function(d) {
+					if (!d || (!d.ipaddr && !d.hostname))
+						return;
 					rows.push(E('tr', { 'class': 'tr cbi-rowstyle-' + (n % 2 ? 2 : 1) }, [
 						E('td', { 'class': 'td' }, d.hostname || '(未命名)'),
-						E('td', { 'class': 'td' }, d.ipv4 || '--'),
-						E('td', { 'class': 'td' }, d.macaddr || mac)
+						E('td', { 'class': 'td' }, d.ipaddr || '--'),
+						E('td', { 'class': 'td' }, d.macaddr || '--')
 					]));
 					n++;
-				}
+				});
 				if (!rows.length)
 					rows.push(E('tr', { 'class': 'tr' }, [
 						E('td', { 'class': 'td', 'colspan': '3', 'style': 'text-align:center;color:#888' }, '無連線裝置')
@@ -614,8 +616,8 @@ return view.extend({
 							E('span', { 'style': 'color:' + (net.isDisabled() ? '#c94040' : '#23b45a') },
 								net.isDisabled() ? '關閉' : '啟用')
 						]),
-						E('td', { 'class': 'td' }, chan ? chan + ' (' + (freq ? (freq / 1000).toFixed(3) : '?') + ' GHz)' : '--'),
-						E('td', { 'class': 'td' }, net.getBSSID() || '--')
+						E('td', { 'class': 'td' }, chan ? chan + ' (' + (freq || '?') + ' GHz)' : '--'),
+						E('td', { 'class': 'td' }, net.getActiveBSSID() || '--')
 					]));
 					n++;
 				});
