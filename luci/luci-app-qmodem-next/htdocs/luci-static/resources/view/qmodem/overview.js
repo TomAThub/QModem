@@ -19,6 +19,7 @@ var callSimInfo = rpc.declare({ object: 'qmodem', method: 'sim_info', params: ['
 var callNetworkInfo = rpc.declare({ object: 'qmodem', method: 'network_info', params: ['config_section'], expect: {} });
 var callGetStats = rpc.declare({ object: 'qmodem', method: 'get_stats', params: ['config_section'], expect: {} });
 var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {} });
+var callRouteDump = rpc.declare({ object: 'network.route', method: 'dump', expect: { route: [] } });
 var callGetCopyright = rpc.declare({ object: 'qmodem', method: 'get_copyright', params: ['config_section'], expect: {} });
 var callInterfaceStatus = rpc.declare({ object: 'network.interface', method: 'status', params: ['interface'], expect: {} });
 var callRcReload = rpc.declare({ object: 'rc', method: 'init', params: ['name'], extra: { 'mode': 'reload' }, expect: {} });
@@ -498,17 +499,55 @@ return view.extend({
 				}).catch(function() { return tryNext(i + 1); });
 			}
 
+			/* the default route is implicit in netifd and kernel-managed
+			   IPv6 addresses are not part of the interface state, so pick
+			   the gateway from the route dump and IPv6 from the kernel */
+			function findGateway(dev) {
+				return callRouteDump().then(function(rt) {
+					var list = (rt && rt.route) || [], gw = null;
+					list.forEach(function(r) {
+						if (!r || gw || !r.gateway)
+							return;
+						if (r.target !== '0.0.0.0' && r.target !== 'default')
+							return;
+						if (r.interface === cur.ifname || r.interface === cur.id ||
+						    (dev && r.interface === dev))
+							gw = r.gateway;
+					});
+					return gw;
+				}).catch(function() { return null; });
+			}
+
+			function hexToIp6(h) {
+				var g = [];
+				for (var i = 0; i < 8; i++)
+					g.push(parseInt(h.substr(i * 4, 4), 16).toString(16));
+				return g.join(':');
+			}
+
+			function findIpv6(dev) {
+				if (!dev)
+					return Promise.resolve([]);
+				return fs.read('/proc/net/if_inet6').then(function(data) {
+					var out = [];
+					String(data).trim().split('\n').forEach(function(l) {
+						var p = l.trim().split(/\s+/);
+						/* <hex addr> <plen> <scope> <flags> <ifname> */
+						if (p.length < 5 || p[4] !== dev || parseInt(p[2], 16) !== 0)
+							return;
+						out.push(hexToIp6(p[0]) + '/' + parseInt(p[1], 10));
+					});
+					return out;
+				}).catch(function() { return []; });
+			}
+
 			tryNext(0).then(function(st) {
-				var ip = null, gw = null, dns = [], ip6 = [];
+				var ip = null, dns = [], ip6 = [], dev = null;
 
 				if (st) {
+					dev = st.l3_device || st.device || null;
 					if (st['ipv4-address'] && st['ipv4-address'].length)
 						ip = st['ipv4-address'][0].address + '/' + st['ipv4-address'][0].mask;
-					if (st.route)
-						st.route.forEach(function(r) {
-							if (gw == null && r && r.target === '0.0.0.0' && r.mask === 0 && r.gateway)
-								gw = r.gateway;
-						});
 					if (st['dns-server'])
 						st['dns-server'].forEach(function(d) {
 							var a = (typeof d === 'string') ? d : (d && d.address);
@@ -522,10 +561,23 @@ return view.extend({
 						});
 				}
 
-				setField(refs.fIp, 'IP 位址', ip);
-				setField(refs.fGw, '預設閘道', gw);
-				setField(refs.fDns, 'DNS 伺服器', dns.length ? dns.join('、') : null);
-				setField(refs.fIp6, 'IPv6 位址', ip6.length ? ip6.join('、') : null);
+				var gw = null;
+				if (st && st.route)
+					st.route.forEach(function(r) {
+						if (gw == null && r && (r.target === '0.0.0.0' || r.target === 'default') &&
+						    r.mask === 0 && r.gateway)
+							gw = r.gateway;
+					});
+
+				return Promise.all([
+					gw != null ? Promise.resolve(gw) : findGateway(dev),
+					ip6.length ? Promise.resolve(ip6) : findIpv6(dev)
+				]).then(function(r) {
+					setField(refs.fIp, 'IP 位址', ip);
+					setField(refs.fGw, '預設閘道', r[0]);
+					setField(refs.fDns, 'DNS 伺服器', dns.length ? dns.join('、') : null);
+					setField(refs.fIp6, 'IPv6 位址', r[1].length ? r[1].join('、') : null);
+				});
 			}).catch(function() { });
 		}
 

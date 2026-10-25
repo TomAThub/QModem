@@ -5,10 +5,13 @@
 			"file": {
 				"/sys/class/hwmon": [ "list" ],
 				"/sys/class/hwmon/*": [ "list" ],
-				"/sys/class/hwmon/*/*": [ "read" ]
+				"/sys/class/hwmon/*/*": [ "read" ],
+				"/proc/net/if_inet6": [ "read" ]
 			},
 			"ubus": {
 				"file": [ "list", "read" ],
+				"network.route": [ "dump" ],
+				"network.interface": [ "status", "dump" ],
 				"qmodem": [
 					"*"
 				],
@@ -16,7 +19,6 @@
 					"status", "config_get", "sync_status", "list", "get", "modem_list", "storage_get"
 				],
 				"rc" : [ "list" ,"init"],
-				"network.interface": [ "status", "dump" ],
 				"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
 			},
 			"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
