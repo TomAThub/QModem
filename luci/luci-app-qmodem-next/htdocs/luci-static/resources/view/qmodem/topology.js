@@ -141,7 +141,8 @@ return view.extend({
 				topoName(),
 				callInterfaceDump().catch(function() { return []; }),
 				L.resolveDefault(callLuciDHCPLeases(), {}),
-				L.resolveDefault(network.getWifiNetworks(), []).catch(function() { return []; })
+				L.resolveDefault(network.getWifiNetworks(), []).catch(function() { return []; }),
+				L.resolveDefault(network.getHostHints(), null)
 			]).then(function(r) {
 				return Promise.all(r[3].map(function(net) {
 					var f = parseFloat(net.getFrequency() || '0');
@@ -149,14 +150,13 @@ return view.extend({
 						return { band: f >= 5 ? '5g' : '24g', list: l };
 					}).catch(function() { return { band: '24g', list: [] }; });
 				})).then(function(assocs) {
-					renderTopo(r[0], r[1], assocs);
+					renderTopo(r[0], r[1], assocs, r[4]);
 				});
 			}).catch(function() { });
 		}
 
-		function renderTopo(d, leaseRes, assocs) {
+		function renderTopo(d, leaseRes, assocs, hints) {
 			var list = Array.isArray(d) ? d : ((d && d.interface) || []),
-				leases = (leaseRes && Array.isArray(leaseRes.dhcp_leases)) ? leaseRes.dhcp_leases : [],
 				wan = null, lan = null;
 
 			list.forEach(function(i) {
@@ -168,10 +168,32 @@ return view.extend({
 					lan = i;
 			});
 
+			/* the uplink is the interface holding the default route */
+			if (!wan)
+				list.forEach(function(i) {
+					if (wan)
+						return;
+					(i.route || []).forEach(function(r) {
+						if (r && r.target === '0.0.0.0' && r.mask === 0)
+							wan = i;
+					});
+				});
+
 			function firstAddr(e, key) {
 				var a = e && e[key];
 				return (a && a.length && a[0].address) ? a[0].address : null;
 			}
+
+			/* merge v4 and v6 leases by MAC, preferring the v4 entry */
+			var leaseByMac = {};
+			((leaseRes && Array.isArray(leaseRes.dhcp6_leases)) ? leaseRes.dhcp6_leases : []).forEach(function(e) {
+				if (e && e.macaddr)
+					leaseByMac[e.macaddr.toLowerCase()] = { hostname: e.hostname, ip: e.ipaddr };
+			});
+			((leaseRes && Array.isArray(leaseRes.dhcp_leases)) ? leaseRes.dhcp_leases : []).forEach(function(e) {
+				if (e && e.macaddr)
+					leaseByMac[e.macaddr.toLowerCase()] = { hostname: e.hostname, ip: e.ipaddr };
+			});
 
 			var stMac = {}, stations = [];
 			assocs.forEach(function(a) {
@@ -184,39 +206,43 @@ return view.extend({
 			});
 
 			var wired = [], groups = { '24g': [], '5g': [] };
-			leases.forEach(function(e) {
-				if (!e || (!e.ipaddr && !e.hostname))
-					return;
-				var k = (e.macaddr || '').toLowerCase(), st = null;
-				if (k && stMac[k])
+			Object.keys(leaseByMac).forEach(function(k) {
+				var e = leaseByMac[k], st = null;
+				if (stMac[k])
 					stations.forEach(function(x) { if (x.mac.toLowerCase() === k) st = x; });
 				if (st) {
 					st.hostname = e.hostname;
-					st.ip = e.ipaddr;
+					st.ip = e.ip;
 					return;
 				}
-				wired.push({ mac: e.macaddr, hostname: e.hostname, ip: e.ipaddr });
+				wired.push({ mac: k, hostname: e.hostname, ip: e.ip });
 			});
 			stations.forEach(function(s) { groups[s.band].push(s); });
 
-			function devNode(p, n, x) {
-				return { id: p + n, name: x.hostname || '(未命名)', type: 'cpe',
+			/* vendor name chain: hostname, then the LuCI host hints, then IP/MAC */
+			function devName(x) {
+				return x.hostname || (hints ? hints.getHostnameByMACAddr(x.mac) : null) ||
+					x.ip || x.mac || '(未命名)';
+			}
+
+			function devNode(p, n, x, conn) {
+				return { id: p + n, name: devName(x), type: 'cpe', conn: conn,
 					status: 'online', ip: x.ip, mac: x.mac };
 			}
 
 			var kids = [{ id: 'internet', name: 'Internet', type: 'internet',
-					status: (wan && wan.up) ? 'online' : 'offline',
+					status: (wan && (wan.up === true || (wan['ipv4-address'] || []).length)) ? 'online' : 'offline',
 					ip: firstAddr(wan, 'ipv4-address') }];
 
 			if (wired.length)
 				kids.push({ id: 'wired', name: '有線設備 (' + wired.length + ')', type: 'wired',
-					status: 'online', children: wired.map(function(x, n) { return devNode('w', n, x); }) });
+					status: 'online', children: wired.map(function(x, n) { return devNode('w', n, x, '有線'); }) });
 			if (groups['24g'].length)
 				kids.push({ id: 'wifi24', name: 'WiFi 2.4G (' + groups['24g'].length + ')', type: 'wireless',
-					status: 'online', children: groups['24g'].map(function(x, n) { return devNode('a2', n, x); }) });
+					status: 'online', children: groups['24g'].map(function(x, n) { return devNode('a2', n, x, 'WiFi 2.4G'); }) });
 			if (groups['5g'].length)
 				kids.push({ id: 'wifi5', name: 'WiFi 5G (' + groups['5g'].length + ')', type: 'wireless',
-					status: 'online', children: groups['5g'].map(function(x, n) { return devNode('a5', n, x); }) });
+					status: 'online', children: groups['5g'].map(function(x, n) { return devNode('a5', n, x, 'WiFi 5G'); }) });
 
 			var root = { id: 'router', name: topoHost || '路由器', type: 'router',
 					status: 'online', ip: firstAddr(lan, 'ipv4-address'), children: kids },
@@ -259,7 +285,7 @@ return view.extend({
 					name = String(nd.node.name || '').replace(/[{}|]/g, ' ').trim(),
 					lw = textWidth(name, 12) + 46,
 					lx = p[0] + r + 6,
-					tip = [nd.node.name || '', '類型: ' + (nd.node.type || ''),
+					tip = [nd.node.name || '', '類型: ' + (nd.node.conn || nd.node.type || ''),
 						nd.node.ip ? 'IP: ' + nd.node.ip : null,
 						nd.node.mac ? 'MAC: ' + nd.node.mac : null,
 						'狀態: ' + (nd.node.status || 'online')];
