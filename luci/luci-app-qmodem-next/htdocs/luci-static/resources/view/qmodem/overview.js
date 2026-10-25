@@ -351,7 +351,7 @@ return view.extend({
 	title: 'CPE 管理',
 
 	load: function() {
-		return Promise.all([ uci.load('qmodem'), network.load() ]).then(function() {
+		return uci.load('qmodem').then(function() {
 			var list = [];
 			uci.sections('qmodem', 'modem-device', function(s) {
 				if (s.at_port)
@@ -596,7 +596,13 @@ return view.extend({
 		}
 
 		function updateWifi() {
-			L.resolveDefault(network.getWifiNetworks(), []).then(function(nets) {
+			/* network.js self-initialises lazily; only flush its cache so
+			   the poll picks up fresh wireless state */
+			var prep = (typeof network.flushCache === 'function')
+				? L.resolveDefault(network.flushCache(), null) : Promise.resolve();
+			prep.then(function() {
+				return L.resolveDefault(network.getWifiNetworks(), []);
+			}).then(function(nets) {
 				var rows = [], n = 0;
 				nets.sort(function(a, b) { return L.naturalCompare(a.getWifiDeviceName(), b.getWifiDeviceName()); });
 				nets.forEach(function(net) {
