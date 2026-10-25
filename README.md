@@ -1,3 +1,17 @@
+> ## 本分支修改說明（TomAThub fork）
+>
+> 本分支為 [FUjr/QModem](https://github.com/FUjr/QModem) 的 fork，針對 Hiveton H5000M（OpenWrt 25.12，mediatek/filogic）自編韌體加入以下修改。
+>
+> ### luci-app-qmodem-next（CPE 管理）
+> - **儀表板重寫**：即時上傳/下載速率（netifd 為主、qmodem 統計為備援）、SVG 速率曲線圖、訊號強度與頻點/頻段顯示（內建 LTE EARFCN→頻段對照表；修正 quectel `AT+QGDNRCNT` 上傳/下載方向互換問題）
+> - **營運商名稱顯示**：內建 MCC-MNC 對照表，總覽頁與 ISP 徽章顯示電信商名稱
+> - **AT 快速指令與 APN 設定檔**：自訂 AT 指令及 APN 設定檔以 uci 儲存、列表顯示目前 APN、漫遊開關（`QNWPREFCFG`）
+> - **簡訊修正**：DB 模式下「卡簡訊」刪除不再出現 `Invalid message index`（index 自動以資料庫 id 補上）；SMS 頁面路徑配合移至 `admin/cpe`
+> - **其他**：安裝後自動重啟 rpcd 使 ACL 立即生效、選單與權限（ACL）調整
+> - **繁體中文介面**：新增 `po/zh_Hant` 翻譯（建置 `luci-i18n-qmodem-next-zh-tw` 套件）
+>
+> ---
+
 # QModem
 
 English | [简体中文](README.zh-cn.md)
