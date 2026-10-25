@@ -1,563 +1,703 @@
 'use strict';
-'require view';
-'require poll';
-'require ui';
-'require dom';
+'require rpc';
 'require uci';
-'require qmodem.qmodem as qmodem';
+'require poll';
+'require view';
+'require qmodem.mcc-mnc as mccmnc';
 
-// Load CSS
 document.head.appendChild(E('link', {
 	'rel': 'stylesheet',
 	'type': 'text/css',
-	'href': L.resource('qmodem/qmodem-next.css')
+	'href': L.resource('qmodem/cpe-dashboard.css')
 }));
 
-// Check if cbi-progressbar class exists
-function hasCssClass(className) {
-	var styleSheets = document.styleSheets;
-	for (var i = 0; i < styleSheets.length; i++) {
-		try {
-			var rules = styleSheets[i].cssRules || styleSheets[i].rules;
-			if (rules) {
-				for (var j = 0; j < rules.length; j++) {
-					if (rules[j].selectorText && rules[j].selectorText.indexOf(className) !== -1) {
-						return true;
-					}
-				}
-			}
-		} catch(e) {
-			// Cross-origin stylesheet, skip
-		}
-	}
-	return false;
+/* qmodem 3.0.x ubus API (rpcd), all methods take config_section */
+var callBaseInfo = rpc.declare({ object: 'qmodem', method: 'base_info', params: ['config_section'], expect: {} });
+var callCellInfo = rpc.declare({ object: 'qmodem', method: 'cell_info', params: ['config_section'], expect: {} });
+var callSimInfo = rpc.declare({ object: 'qmodem', method: 'sim_info', params: ['config_section'], expect: {} });
+var callNetworkInfo = rpc.declare({ object: 'qmodem', method: 'network_info', params: ['config_section'], expect: {} });
+var callGetStats = rpc.declare({ object: 'qmodem', method: 'get_stats', params: ['config_section'], expect: {} });
+var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {} });
+var callGetCopyright = rpc.declare({ object: 'qmodem', method: 'get_copyright', params: ['config_section'], expect: {} });
+var callInterfaceStatus = rpc.declare({ object: 'network.interface', method: 'status', params: ['interface'], expect: {} });
+var callRcReload = rpc.declare({ object: 'rc', method: 'init', params: ['name'], extra: { 'mode': 'reload' }, expect: {} });
+
+/* uci.commit()/reload() were removed in newer LuCI; keep compat */
+function uciCommit(conf) {
+	if (typeof uci.commit === 'function')
+		return Promise.resolve(uci.commit(conf));
+	return uci.save().then(function() { return uci.apply(10); });
 }
 
-var progressbar_className = hasCssClass('.cbi-progressbar') ? 'cbi-progressbar' : 'compat-progressbar';
+function uciReload(conf) {
+	if (typeof uci.reload === 'function')
+		return Promise.resolve(uci.reload(conf));
+	uci.unload(conf);
+	return uci.load(conf);
+}
 
-// LuciTable class for rendering modem info tables
-var LuciTable = function() {
-	this.rows = [];
-	this.tbody = null;
-	this.fieldset = null;
-	this.initTable();
+var HISTORY_LEN = 60;
+var GRADE_LABELS = ['優秀', '良好', '普通', '較差'];
+var GRADE_CLASS = ['good', 'ok', 'mid', 'bad'];
+var SIG_TITLES = {
+	'RSRP': 'RSRP 參考訊號接收功率',
+	'RSRQ': 'RSRQ 參考訊號接收品質',
+	'SINR': 'SINR 訊號與干擾雜訊比'
 };
 
-LuciTable.prototype = {
-	initTable: function() {
-		this.fieldset = E('fieldset', { 'class': 'cbi-section collapsible draggable', 'draggable': 'true' });
-		//this.legend = E('legend', {});
-		this.title_span = E('h2', { 'class': 'panel-title' });
-		var table = E('table', { 'class': 'table' });
-		this.tbody = E('tbody', { 'style': 'width: 100%' });
-		
-		table.appendChild(this.tbody);
-		//this.fieldset.appendChild(this.legend);
-		this.fieldset.appendChild(this.title_span);
-		this.fieldset.appendChild(table);
-	},
+/* keys already shown in dedicated cards/fields; the rest are rendered generically */
+var CONSUMED_KEYS = {
+	'RSRP': 1, 'RSRQ': 1, 'SINR': 1, 'network_mode': 1,
+	'MCC': 1, 'MNC': 1, 'TAC': 1, 'Cell ID': 1, 'Physical Cell ID': 1,
+	'ARFCN': 1, 'EARFCN': 1, 'NR-ARFCN': 1, 'UARFCN': 1,
+	'Band': 1, 'DL Bandwidth': 1, 'UL Bandwidth': 1,
+	'ISP': 1, 'connect_status': 1
+};
 
-	setTitle: function(value) {
-		// Translate class name
-		var translatedValue = _(value);
-		//this.legend.textContent = translatedValue;
-		this.title_span.textContent = translatedValue;
-	},
+/* E-UTRA band by downlink EARFCN range (3GPP TS 36.101 Table 5.5.1-1),
+   used as fallback when the modem reports an empty band field */
+var LTE_BANDS = [
+	[0, 599, '1'], [600, 1199, '2'], [1200, 1949, '3'], [1950, 2399, '4'],
+	[2400, 2649, '5'], [2650, 2749, '6'], [2750, 3449, '7'], [3450, 3799, '8'],
+	[3800, 4149, '9'], [4150, 4749, '10'], [4750, 4949, '11'], [5010, 5179, '12'],
+	[5180, 5279, '13'], [5280, 5379, '14'], [5730, 5849, '17'], [5850, 5999, '18'],
+	[6000, 6149, '19'], [6150, 6449, '20'], [6450, 6599, '21'], [6600, 7399, '22'],
+	[7500, 7699, '23'], [7700, 8039, '24'], [8040, 8689, '25'], [8690, 9039, '26'],
+	[9040, 9209, '27'], [9210, 9659, '28'], [9660, 9769, '29'], [9770, 9869, '30'],
+	[9870, 9919, '31'], [9920, 10359, '32'], [36000, 36199, '33'], [36200, 36349, '34'],
+	[36350, 36949, '35'], [36950, 37549, '36'], [37550, 37749, '37'], [37750, 38249, '38'],
+	[38250, 38649, '39'], [38650, 39649, '40'], [39650, 41589, '41'], [41590, 43589, '42'],
+	[43590, 45589, '43'], [45590, 46589, '44'], [46590, 46789, '45'], [46790, 54539, '46'],
+	[54540, 55239, '47'], [55240, 56739, '48'], [56740, 58239, '49'], [58240, 59089, '50'],
+	[59090, 59139, '51'], [59140, 60139, '52'], [60140, 60254, '53'], [60255, 60304, '54'],
+	[65536, 66435, '65'], [66436, 67335, '66'], [67336, 67535, '67'], [67536, 67835, '68'],
+	[67836, 68335, '69'], [68336, 68585, '70'], [68586, 68935, '71'], [68936, 68985, '72'],
+	[68986, 69035, '73'], [69036, 69465, '74'], [69466, 70315, '75'], [70316, 70365, '76'],
+	[70366, 70545, '85'], [70546, 70595, '87'], [70596, 70645, '88'], [70646, 70655, '103'],
+	[70656, 70705, '106'], [73386, 73485, '111']
+];
 
-	newTr: function(data, index) {
-		var type = data.type;
-		switch(type) {
-			case 'plain_text':
-				var key = data.key;
-				var value = data.value;
-				var full_name = data.full_name || key;
-				var extra_info = data.extra_info;
-				
-				// Translate full_name and extra_info
-				var translatedName = _(full_name);
-				var displayName = extra_info ? translatedName + ' (' + extra_info + ')' : translatedName;
-				
-				this.rows[index].left.textContent = displayName;
-				this.rows[index].right.textContent = value;
+function bandFromEarfcn(earfcn) {
+	var e = toNum(earfcn);
+	if (e == null)
+		return null;
+	for (var i = 0; i < LTE_BANDS.length; i++)
+		if (e >= LTE_BANDS[i][0] && e <= LTE_BANDS[i][1])
+			return LTE_BANDS[i][2];
+	return null;
+}
 
-				if (value == null || value == '') {
-					this.rows[index].row.style.display = 'none';
-				} else {
-					this.rows[index].row.style.display = '';
-				}
-				break;
-				
-			case 'progress_bar':
-				var key = data.key;
-				var full_name = data.full_name || key;
-				var extra_info = data.extra_info;
-				var value = parseFloat(data.value);
-				var min = parseFloat(data.min_value);
-				var max = parseFloat(data.max_value);
-				var unit = data.unit || '';
-				var title = '(' + data.value + '/' + data.max_value + unit + ')';
-				var percentage = ((value - min) / (max - min)) * 100;
-				
-				// Clamp percentage between 0 and 100
-				percentage = Math.max(0, Math.min(100, percentage));
-				
-				// Translate full_name and extra_info
-				var translatedName = _(full_name);
-				var displayName = extra_info ? translatedName + ' (' + extra_info + ')' : translatedName;
-				
-				this.rows[index].left.textContent = displayName;
-				
-				var progress_bar = E('div', { 
-					'class': progressbar_className,
-					'title': title
-				});
-				var progress_bar_bar = E('div', { 'style': 'width:' + percentage + '%' });
-				progress_bar.appendChild(progress_bar_bar);
-				
-				this.rows[index].right.innerHTML = '';
-				this.rows[index].right.appendChild(progress_bar);
-				
-				this.rows[index].row.style.display = '';
-				break;
-		}
-	},
-
-	setData: function(value) {
-		if (value == null) return;
-		
-		if (Array.isArray(value)) {
-			this.setArrayData(value);
-		} else {
-			this.setObjectData(value);
-		}
-	},
-
-	setArrayData: function(value) {
-		var row_length = this.rows.length;
-		var value_length = value.length;
-		
-		// Add missing rows
-		if (row_length < value_length) {
-			for (var i = row_length; i < value_length; i++) {
-				var row = E('tr', { 'class': 'tr' });
-				var cell_left = E('td', { 'class': 'td left', 'width': '33%' });
-				var cell_right = E('td', { 'class': 'td' });
-				row.appendChild(cell_left);
-				row.appendChild(cell_right);
-				this.tbody.appendChild(row);
-				
-				this.rows.push({
-					row: row,
-					left: cell_left,
-					right: cell_right
-				});
+/* collect entries not covered by dedicated cards -> generic key/value fields;
+   warning_message entries are collected separately */
+function extraFields(lists) {
+	var seen = {}, fields = [], warnings = [];
+	lists.forEach(function(list) {
+		list.forEach(function(e) {
+			if (!e || !e.key || seen[e.key] || CONSUMED_KEYS[e.key])
+				return;
+			seen[e.key] = 1;
+			if (e.type === 'warning_message') {
+				if (e.value != null && String(e.value) !== '')
+					warnings.push(String(e.value));
+				return;
 			}
-		}
-		// Remove extra rows
-		else if (row_length > value_length) {
-			for (var i = value_length; i < row_length; i++) {
-				this.tbody.removeChild(this.rows[i].row);
-			}
-			this.rows = this.rows.slice(0, value_length);
-		}
-		
-		// Update row content
-		for (var i = 0; i < value.length; i++) {
-			this.newTr(value[i], i);
-		}
-	},
+			var val = (e.value == null) ? null : String(e.value);
+			if (val === '')
+				val = null;
+			if (val == null)
+				return;
+			if (e.type === 'progress_bar' && e.max_value != null)
+				val += ' / ' + String(e.max_value) + (e.unit ? ' ' + e.unit : '');
+			fields.push(E('div', { 'class': 'cpe-field' }, [
+				E('div', { 'class': 'cpe-field-label' }, _(e.full_name || e.key)),
+				E('div', { 'class': 'cpe-field-value' }, val)
+			]));
+		});
+	});
+	return { fields: fields, warnings: warnings };
+}
 
-	setObjectData: function(value) {
-		var row_length = this.rows.length;
-		var value_length = Object.keys(value).length;
-		
-		// Add missing rows
-		if (row_length < value_length) {
-			for (var i = row_length; i < value_length; i++) {
-				var row = E('tr', { 'class': 'tr' });
-				var cell_left = E('td', { 'class': 'td left', 'width': '33%' });
-				var cell_right = E('td', { 'class': 'td' });
-				row.appendChild(cell_left);
-				row.appendChild(cell_right);
-				this.tbody.appendChild(row);
-				
-				this.rows.push({
-					row: row,
-					left: cell_left,
-					right: cell_right
-				});
-			}
-		}
-		// Remove extra rows
-		else if (row_length > value_length) {
-			for (var i = value_length; i < row_length; i++) {
-				this.tbody.removeChild(this.rows[i].row);
-			}
-			this.rows = this.rows.slice(0, value_length);
-		}
-		
-		// Update row content
-		var index = 0;
-		for (var key in value) {
-			this.rows[index].left.textContent = key;
-			this.rows[index].right.textContent = value[key];
-			index++;
-		}
+function entriesOf(res) {
+	return (res && Array.isArray(res.modem_info)) ? res.modem_info : [];
+}
+
+function entryOf(list, key) {
+	for (var i = 0; i < list.length; i++) {
+		if (list[i] && list[i].key === key)
+			return list[i];
 	}
-};
+	return null;
+}
+
+function valueOf(list, key) {
+	var e = entryOf(list, key);
+	if (e && e.value != null && String(e.value) !== '')
+		return String(e.value);
+	return null;
+}
+
+function toNum(v) {
+	if (v == null)
+		return null;
+	var n = parseFloat(v);
+	return isNaN(n) ? null : n;
+}
+
+function truthy(v) {
+	return v === true || v === 1 || v === '1' || v === 'true';
+}
+
+function formatRate(bps) {
+	if (bps == null)
+		return '--';
+	if (bps >= 1e6)
+		return (bps / 1e6).toFixed(2);
+	if (bps >= 1e3)
+		return (bps / 1e3).toFixed(1);
+	return String(Math.round(bps));
+}
+
+function rateUnit(bps) {
+	if (bps == null)
+		return 'bps';
+	if (bps >= 1e6)
+		return 'Mbps';
+	if (bps >= 1e3)
+		return 'Kbps';
+	return 'bps';
+}
+
+function formatBytes(b) {
+	if (b == null)
+		return '--';
+	if (b >= 1073741824)
+		return (b / 1073741824).toFixed(2) + ' GB';
+	if (b >= 1048576)
+		return (b / 1048576).toFixed(2) + ' MB';
+	if (b >= 1024)
+		return (b / 1024).toFixed(1) + ' KB';
+	return Math.round(b) + ' B';
+}
+
+/* thresholds identical to qmodem.js formatSignal() */
+function gradeRsrp(v) { return v >= -80 ? 0 : v >= -90 ? 1 : v >= -100 ? 2 : 3; }
+function gradeRsrq(v) { return v >= -10 ? 0 : v >= -15 ? 1 : v >= -20 ? 2 : 3; }
+function gradeSinr(v) { return v >= 20 ? 0 : v >= 13 ? 1 : v >= 0 ? 2 : 3; }
+
+function overallGrade(vals) {
+	var g = [];
+	for (var i = 0; i < vals.length; i++) {
+		if (vals[i] != null)
+			g.push(vals[i]);
+	}
+	if (!g.length)
+		return null;
+	return Math.max.apply(null, g);
+}
+
+function signalLevel(grade) {
+	if (grade == null)
+		return 0;
+	return [5, 4, 3, 1][grade];
+}
+
+function netMode(v) {
+	var s = String(v || '').toUpperCase();
+	if (s.indexOf('NR5G_SA') >= 0 || s === 'SA')
+		return '5G SA';
+	if (s.indexOf('NR5G_NSA') >= 0 || s === 'NSA')
+		return '5G NSA';
+	if (s.indexOf('NR') >= 0)
+		return '5G';
+	if (s.indexOf('LTE') >= 0)
+		return '4G LTE';
+	if (s.indexOf('WCDMA') >= 0 || s.indexOf('UMTS') >= 0 || s.indexOf('HSPA') >= 0)
+		return '3G';
+	if (s.indexOf('GSM') >= 0 || s.indexOf('EDGE') >= 0)
+		return '2G';
+	return v || '--';
+}
+
+function badge(label, cls) {
+	return E('span', { 'class': 'cpe-badge ' + (cls || '') }, label);
+}
+
+function field(label, value) {
+	return E('div', { 'class': 'cpe-field' }, [
+		E('div', { 'class': 'cpe-field-label' }, label),
+		E('div', { 'class': 'cpe-field-value' }, (value == null || value === '') ? '--' : String(value))
+	]);
+}
+
+function setField(el, label, value) {
+	el.firstChild.textContent = label;
+	el.lastChild.textContent = (value == null || value === '') ? '--' : String(value);
+}
+
+function card(title, valueNodes, sub) {
+	var n = [E('div', { 'class': 'cpe-card-title' }, title)];
+	if (valueNodes)
+		n = n.concat(valueNodes);
+	if (sub)
+		n.push(E('div', { 'class': 'cpe-card-sub' }, sub));
+	return E('div', { 'class': 'cpe-card' }, n);
+}
+
+function barsEl(level, grade) {
+	var spans = [];
+	for (var i = 1; i <= 5; i++) {
+		var cls = '';
+		if (i <= level) {
+			cls = 'on';
+			if (grade >= 1 && grade <= 2)
+				cls += ' ok';
+			else if (grade >= 3)
+				cls += ' bad';
+		}
+		spans.push(E('span', { 'class': cls }));
+	}
+	return E('div', { 'class': 'cpe-bars' }, spans);
+}
+
+var SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svgEl(name, attrs) {
+	var el = document.createElementNS(SVG_NS, name);
+	for (var k in attrs)
+		if (attrs.hasOwnProperty(k))
+			el.setAttribute(k, attrs[k]);
+	return el;
+}
+
+function sparkSvg() {
+	var svg = svgEl('svg', { 'class': 'cpe-spark', 'viewBox': '0 0 600 160', 'preserveAspectRatio': 'none' });
+	for (var y = 40; y < 160; y += 40)
+		svg.appendChild(svgEl('line', { 'class': 'grid', 'x1': 0, 'y1': y, 'x2': 600, 'y2': y }));
+	svg.appendChild(svgEl('polyline', { 'class': 'down', 'points': '' }));
+	svg.appendChild(svgEl('polyline', { 'class': 'up', 'points': '' }));
+	return svg;
+}
+
+function sparkPoints(hist, key, scale) {
+	var pts = [];
+	for (var i = 0; i < hist.length; i++) {
+		var v = hist[i][key] || 0;
+		var x = (i * (600 / (HISTORY_LEN - 1))).toFixed(1);
+		var y = (155 - (v / scale) * 150).toFixed(1);
+		pts.push(x + ',' + y);
+	}
+	return pts.join(' ');
+}
+
+function domContent(el, node) {
+	while (el.firstChild)
+		el.removeChild(el.firstChild);
+	if (node != null)
+		el.appendChild(node);
+}
 
 return view.extend({
+	title: 'CPE 管理',
+
 	load: function() {
-		return Promise.all([
-			uci.load('qmodem')
+		return uci.load('qmodem').then(function() {
+			var list = [];
+			uci.sections('qmodem', 'modem-device', function(s) {
+				if (s.at_port)
+					var ifn = (s.alias && s.alias !== '-') ? s.alias : s['.name'];
+					list.push({ id: s['.name'], ifname: ifn, name: ifn.toUpperCase(), paused: s.state === 'disabled' });
+			});
+			return list;
+		});
+	},
+
+	render: function(modems) {
+		var refs = { sigCards: {} }, hist = [], peakDown = 0, peakUp = 0,
+		    lastStats = null, cur = null, curVendor = null;
+
+		if (!modems || !modems.length)
+			return E('div', { 'class': 'cbi-map' }, [
+				E('h3', 'CPE 管理'),
+				E('div', { 'class': 'alert-message warning' }, '未找到已啟用的 qmodem 模組設定，請先安裝 qmodem 並完成設定。')
+			]);
+
+		function resetSpeedState() {
+			hist = [];
+			peakDown = 0;
+			peakUp = 0;
+			lastStats = null;
+		}
+
+		function readCounters() {
+			/* netifd interface counters first (qmodem names the interface
+			   after the modem alias or section), then fall back to the
+			   modem-side AT traffic counters */
+			var names = [];
+			if (cur.ifname)
+				names.push(cur.ifname);
+			if (cur.id && cur.id !== cur.ifname)
+				names.push(cur.id);
+
+			function tryNext(i) {
+				if (i >= names.length)
+					return Promise.resolve(null);
+				return callInterfaceStatus(names[i]).then(function(st) {
+					if (st && st.statistics) {
+						var rx = toNum(st.statistics.rx_bytes),
+						    tx = toNum(st.statistics.tx_bytes);
+						if (rx != null && tx != null)
+							return { rx: rx, tx: tx };
+					}
+					return tryNext(i + 1);
+				}).catch(function() { return tryNext(i + 1); });
+			}
+
+			return tryNext(0).then(function(c) {
+				if (c)
+					return c;
+				return callGetStats(cur.id).then(function(st) {
+					/* quectel.sh parses AT+QGDNRCNT as "<tx>,<rx>" but the
+					   modules actually answer "<rx>,<tx>", so the ubus field
+					   names are swapped: total_rx_bytes holds TX and vice versa */
+					if (st && st.available && st.total_rx_bytes != null && st.total_tx_bytes != null) {
+						var swap = curVendor !== 'fibocom';
+						return { rx: toNum(swap ? st.total_tx_bytes : st.total_rx_bytes),
+						         tx: toNum(swap ? st.total_rx_bytes : st.total_tx_bytes) };
+					}
+					return null;
+				}).catch(function() { return null; });
+			});
+		}
+
+		function updateSpeed() {
+			if (!cur)
+				return;
+
+			readCounters().then(function(c) {
+				var now = Date.now() / 1000,
+				    down = null, up = null;
+
+				if (c && c.rx != null && c.tx != null) {
+					if (lastStats) {
+						var dt = now - lastStats.t;
+						if (dt > 0) {
+							down = Math.max(0, (c.rx - lastStats.rx) / dt * 8);
+							up = Math.max(0, (c.tx - lastStats.tx) / dt * 8);
+						}
+					}
+					lastStats = { t: now, rx: c.rx, tx: c.tx };
+				}
+				else {
+					lastStats = null;
+				}
+
+				if (down != null) {
+					hist.push({ down: down / 1e6, up: (up || 0) / 1e6 });
+					if (hist.length > HISTORY_LEN)
+						hist.shift();
+					if (down > peakDown)
+						peakDown = down;
+					if (up > peakUp)
+						peakUp = up;
+				}
+
+				setField(refs.downCard, '目前下載速率', formatRate(down) + ' ' + rateUnit(down));
+				setField(refs.upCard, '目前上傳速率', formatRate(up) + ' ' + rateUnit(up));
+				setField(refs.peakDown, '峰值速率 下行', formatRate(peakDown) + ' ' + rateUnit(peakDown));
+				setField(refs.peakUp, '峰值速率 上行', formatRate(peakUp) + ' ' + rateUnit(peakUp));
+
+				var s = 0.02;
+				for (var i = 0; i < hist.length; i++)
+					s = Math.max(s, hist[i].down, hist[i].up);
+				refs.sparkDown.setAttribute('points', sparkPoints(hist, 'down', s));
+				refs.sparkUp.setAttribute('points', sparkPoints(hist, 'up', s));
+			}).catch(function() {
+				lastStats = null;
+				setField(refs.downCard, '目前下載速率', null);
+				setField(refs.upCard, '目前上傳速率', null);
+			});
+		}
+
+		function updateModem() {
+			if (!cur)
+				return;
+
+			Promise.all([
+				callBaseInfo(cur.id), callCellInfo(cur.id), callSimInfo(cur.id),
+				callNetworkInfo(cur.id), callGetStats(cur.id), callDialStatus(cur.id)
+			]).then(function(r) {
+				var base = entriesOf(r[0]), cell = entriesOf(r[1]), sim = entriesOf(r[2]),
+				    net = entriesOf(r[3]), stats = r[4] || {}, dial = r[5] || {};
+
+				curVendor = (valueOf(base, 'manufacturer') || '').toLowerCase();
+
+				domContent(refs.err, null);
+
+				var rsrp = toNum(valueOf(cell, 'RSRP')),
+				    rsrq = toNum(valueOf(cell, 'RSRQ')),
+				    sinr = toNum(valueOf(cell, 'SINR'));
+				var mode = valueOf(cell, 'network_mode') || valueOf(net, 'network_mode') || valueOf(base, 'network_mode');
+				var isp = valueOf(sim, 'ISP'), ispName = null;
+				if (isp) {
+					var ispDigits = String(isp).replace(/\D/g, '');
+					if (ispDigits.length >= 5)
+						ispName = mccmnc.lookup(ispDigits.slice(0, 3), ispDigits.slice(3));
+				}
+				var gR = rsrp != null ? gradeRsrp(rsrp) : null,
+				    gQ = rsrq != null ? gradeRsrq(rsrq) : null,
+				    gS = sinr != null ? gradeSinr(sinr) : null;
+				var gAll = overallGrade([gR, gQ, gS]);
+
+				domContent(refs.bars, barsEl(signalLevel(gAll), gAll));
+				refs.sigValue.textContent = signalLevel(gAll) + '/5';
+				domContent(refs.sigBadge, gAll == null ? badge('無訊號', 'mid') : badge(GRADE_LABELS[gAll], GRADE_CLASS[gAll]));
+
+				refs.modeValue.textContent = netMode(mode);
+				refs.modeSub.textContent = mode || '未註冊';
+				domContent(refs.modeBadge, badge(netMode(mode), (mode && String(mode).toUpperCase().indexOf('NR') >= 0) ? 'good' : 'ok'));
+
+				if (isp) {
+					var ispBadge = badge(ispName || isp, '');
+					ispBadge.title = 'ISP / PLMN: ' + isp;
+					domContent(refs.ispBadge, ispBadge);
+				}
+
+				domContent(refs.dialBadge, truthy(dial.running) ? badge('已撥號', 'good') : badge('未撥號', 'bad'));
+
+				var cs = valueOf(base, 'connect_status');
+				refs.connSub.textContent = cs ? '模組狀態: ' + cs : '';
+
+				function sigCard(key, val, unit, grade) {
+					var v = refs.sigCards[key];
+					if (!v)
+						return;
+					v.value.textContent = val == null ? '--' : String(val);
+					v.unit.textContent = unit ? ' ' + unit : '';
+					domContent(v.badge, grade == null ? badge('無資料', 'mid') : badge(GRADE_LABELS[grade], GRADE_CLASS[grade]));
+				}
+				sigCard('RSRP', rsrp, 'dBm', gR);
+				sigCard('RSRQ', rsrq, 'dB', gQ);
+				sigCard('SINR', sinr, 'dB', gS);
+
+				setField(refs.fMode, '網路模式', netMode(mode));
+				var mccV = valueOf(cell, 'MCC'), mncV = valueOf(cell, 'MNC');
+				var opName = mccmnc.lookup(mccV, mncV);
+				setField(refs.fMcc, '營運商', opName || ((mccV || '--') + ' / ' + (mncV || '--')));
+				refs.fMcc.lastChild.title = 'MCC / MNC: ' + (mccV || '--') + ' / ' + (mncV || '--');
+				setField(refs.fTac, 'TAC', valueOf(cell, 'TAC'));
+				setField(refs.fPci, 'PCI', valueOf(cell, 'Physical Cell ID'));
+				setField(refs.fCell, '小區 ID', valueOf(cell, 'Cell ID'));
+				setField(refs.fArfcn, '下行頻點 (ARFCN)', valueOf(cell, 'ARFCN') || valueOf(cell, 'EARFCN') || valueOf(cell, 'NR-ARFCN') || valueOf(cell, 'UARFCN'));
+				var bandV = valueOf(cell, 'Band') || bandFromEarfcn(valueOf(cell, 'EARFCN') || valueOf(cell, 'ARFCN'));
+				setField(refs.fBand, '頻段 (Band)', bandV);
+				setField(refs.fDl, '下行頻寬', valueOf(cell, 'DL Bandwidth'));
+				setField(refs.fUl, '上行頻寬', valueOf(cell, 'UL Bandwidth'));
+
+				if (truthy(stats.available)) {
+					refs.traffic.style.display = '';
+					/* quectel.sh parses AT+QGDNRCNT with the directions swapped */
+					var rxBytes = curVendor === 'quectel' ? stats.total_tx_bytes : stats.total_rx_bytes,
+					    txBytes = curVendor === 'quectel' ? stats.total_rx_bytes : stats.total_tx_bytes;
+					setField(refs.tRx, '累計下行流量', formatBytes(toNum(rxBytes)));
+					setField(refs.tTx, '累計上行流量', formatBytes(toNum(txBytes)));
+				}
+				else {
+					refs.traffic.style.display = 'none';
+				}
+
+				var extra = extraFields([base, sim, net, cell]);
+				domContent(refs.warnBox, extra.warnings.length
+					? E('div', { 'class': 'alert-message warning' }, extra.warnings.join('； ')) : null);
+				while (refs.infoBox.firstChild)
+					refs.infoBox.removeChild(refs.infoBox.firstChild);
+				extra.fields.forEach(function(f) { refs.infoBox.appendChild(f); });
+				refs.info.style.display = extra.fields.length ? '' : 'none';
+			}).catch(function(e) {
+				domContent(refs.err, E('div', { 'class': 'alert-message warning' },
+					'讀取模組資料失敗: ' + (e && e.message ? e.message : e) + '（請確認 qmodem 已執行，且目前使用者具有權限）'));
+			});
+		}
+
+		function sigCardEl(key) {
+			var value = E('span'), unit = E('small'), badgeEl = E('span');
+			refs.sigCards[key] = { value: value, unit: unit, badge: badgeEl };
+			return card(SIG_TITLES[key], [
+				E('div', { 'class': 'cpe-card-value' }, value, unit),
+				badgeEl
+			]);
+		}
+
+		function refreshPauseUI() {
+			var paused = !!(cur && cur.paused);
+			pauseBtn.textContent = paused ? '恢復管理' : '暫停管理';
+			domContent(refs.pauseBadge, paused ? badge('已暫停管理', 'bad') : null);
+		}
+
+		var pauseBtn = E('button', { 'class': 'cbi-button cbi-button-action' }, '暫停管理');
+		pauseBtn.addEventListener('click', function() {
+			if (!cur || pauseBtn.disabled)
+				return;
+			pauseBtn.disabled = true;
+			var op = cur.paused ? uci.unset('qmodem', cur.id, 'state') : uci.set('qmodem', cur.id, 'state', 'disabled');
+			Promise.resolve(op).then(function() {
+				return uciCommit('qmodem');
+			}).then(function() {
+				return callRcReload('qmodem_network');
+			}).then(function() {
+				cur.paused = !cur.paused;
+				return uciReload('qmodem');
+			}).catch(function(e) {
+				domContent(refs.err, E('div', { 'class': 'alert-message warning' },
+					'切換失敗: ' + (e && e.message ? e.message : e) + '（請確認目前使用者具有寫入權限）'));
+			}).then(function() {
+				pauseBtn.disabled = false;
+				refreshPauseUI();
+				setTimeout(updateModem, 3000);
+			});
+		});
+
+		var container = E('div', { 'class': 'cpe-wrap' });
+
+		var toolbar = E('div', { 'class': 'cpe-toolbar' });
+		var select = E('select', { 'class': 'cbi-input-select' });
+		modems.forEach(function(m) {
+			select.appendChild(E('option', { 'value': m.id }, m.name + (m.paused ? ' (已暫停)' : '')));
+		});
+		refs.dialBadge = E('span');
+		refs.modeBadge = E('span');
+		refs.ispBadge = E('span');
+		refs.pauseBadge = E('span');
+		toolbar.appendChild(select);
+		toolbar.appendChild(refs.dialBadge);
+		toolbar.appendChild(refs.modeBadge);
+		toolbar.appendChild(refs.ispBadge);
+		toolbar.appendChild(pauseBtn);
+		toolbar.appendChild(refs.pauseBadge);
+		container.appendChild(toolbar);
+
+		refs.err = E('div');
+		container.appendChild(refs.err);
+
+		refs.warnBox = E('div');
+		container.appendChild(refs.warnBox);
+
+		refs.connSub = E('div', { 'class': 'cpe-card-sub' });
+		container.appendChild(refs.connSub);
+
+		refs.bars = E('div');
+		refs.sigValue = E('span');
+		refs.sigBadge = E('span');
+		refs.modeValue = E('span');
+		refs.modeSub = E('div', { 'class': 'cpe-card-sub' });
+		refs.downCard = field('目前下載速率', null);
+		refs.upCard = field('目前上傳速率', null);
+
+		container.appendChild(E('div', { 'class': 'cpe-cards' }, [
+			card('訊號強度', [
+				E('div', { 'class': 'cpe-card-value' }, refs.bars, refs.sigValue),
+				refs.sigBadge
+			]),
+			card('網路類型', [E('div', { 'class': 'cpe-card-value' }, refs.modeValue)], refs.modeSub),
+			card('即時速率', [refs.downCard, refs.upCard])
+		]));
+
+		var speed = sparkSvg();
+		refs.sparkDown = speed.getElementsByTagName('polyline')[0];
+		refs.sparkUp = speed.getElementsByTagName('polyline')[1];
+		refs.peakDown = field('峰值速率 下行', null);
+		refs.peakUp = field('峰值速率 上行', null);
+
+		container.appendChild(E('div', { 'class': 'cpe-section' }, [
+			E('h3', '詳細訊號參數'),
+			E('div', { 'class': 'cpe-cards' }, [sigCardEl('RSRP'), sigCardEl('RSRQ'), sigCardEl('SINR')]),
+			E('div', { 'class': 'cpe-quality-legend' }, [
+				badge('優秀', 'good'), badge('良好', 'ok'), badge('普通', 'mid'), badge('較差', 'bad'),
+				E('span', '　顏色用於綜合評估目前訊號狀態，資料基於 RSRP / RSRQ / SINR 分級。')
+			])
+		]));
+
+		container.appendChild(E('div', { 'class': 'cpe-section' }, [
+			E('h3', '即時速率'),
+			speed,
+			E('div', { 'class': 'cpe-legend' }, [
+				E('span', [E('i', { 'class': 'down' }), '下行']),
+				E('span', [E('i', { 'class': 'up' }), '上行'])
+			]),
+			E('div', { 'class': 'cpe-fields' }, [refs.peakDown, refs.peakUp])
+		]));
+
+		refs.fMode = field('網路模式', null);
+		refs.fMcc = field('營運商', null);
+		refs.fTac = field('TAC', null);
+		refs.fPci = field('PCI', null);
+		refs.fCell = field('小區 ID', null);
+		refs.fArfcn = field('下行頻點 (ARFCN)', null);
+		refs.fBand = field('頻段 (Band)', null);
+		refs.fDl = field('下行頻寬', null);
+		refs.fUl = field('上行頻寬', null);
+
+		container.appendChild(E('div', { 'class': 'cpe-section' }, [
+			E('h3', '小區資訊'),
+			E('div', { 'class': 'cpe-fields' }, [
+				refs.fMode, refs.fMcc, refs.fTac, refs.fPci, refs.fCell,
+				refs.fArfcn, refs.fBand, refs.fDl, refs.fUl
+			])
+		]));
+
+		refs.infoBox = E('div', { 'class': 'cpe-fields' });
+		refs.info = E('div', { 'class': 'cpe-section' }, [
+			E('h3', '模組與 SIM 資訊'),
+			refs.infoBox
 		]);
-	},
+		container.appendChild(refs.info);
 
-	getModemList: function() {
-		var modems = [];
-		var sections = uci.sections('qmodem', 'modem-device');
-		
-		sections.forEach(function(section) {
-			if (section.state !== 'disabled' && section.at_port) {
-				var name = section.name ? section.name.toUpperCase() : 'Unknown';
-				var displayName = section.alias ? section.alias + ' (' + name + ')' : name;
-				
-				modems.push({
-					id: section['.name'],
-					name: displayName,
-					at_port: section.at_port
-				});
-			}
-		});
-		
-		return modems;
-	},
+		refs.tRx = field('累計下行流量', null);
+		refs.tTx = field('累計上行流量', null);
+		refs.traffic = E('div', { 'class': 'cpe-section' }, [
+			E('h3', '流量統計'),
+			E('div', { 'class': 'cpe-fields' }, [refs.tRx, refs.tTx])
+		]);
+		container.appendChild(refs.traffic);
 
-	// Get section order from localStorage
-	getSectionOrder: function(modemId) {
-		var key = 'qmodem_section_order_' + modemId;
-		var order = localStorage.getItem(key);
-		return order ? JSON.parse(order) : [];
-	},
+		refs.copyright = E('div', { 'class': 'cpe-card-sub', 'style': 'margin-top:14px' });
+		container.appendChild(refs.copyright);
 
-	// Save section order to localStorage
-	saveSectionOrder: function(modemId, order) {
-		var key = 'qmodem_section_order_' + modemId;
-		localStorage.setItem(key, JSON.stringify(order));
-	},
-
-	// Get collapsed state from localStorage
-	getCollapsedState: function(modemId, className) {
-		var key = 'qmodem_collapsed_' + modemId + '_' + className;
-		return localStorage.getItem(key) === 'true';
-	},
-
-	// Save collapsed state to localStorage
-	saveCollapsedState: function(modemId, className, isCollapsed) {
-		var key = 'qmodem_collapsed_' + modemId + '_' + className;
-		localStorage.setItem(key, isCollapsed ? 'true' : 'false');
-	},
-
-	// Attach collapse and drag handlers to a section
-	attachSectionHandlers: function(fieldset, className, modemId, infoContainer) {
-		var self = this;
-		
-		// Collapse/expand handler
-		var legend = fieldset.querySelector('legend');
-		var title = fieldset.querySelector('.panel-title');
-		
-		var toggleCollapse = function(e) {
-			// Don't toggle if dragging
-			if (fieldset.classList.contains('dragging')) {
+		function updateCopyright() {
+			if (!cur)
 				return;
-			}
-			
-			fieldset.classList.toggle('collapsed');
-			var isCollapsed = fieldset.classList.contains('collapsed');
-			self.saveCollapsedState(modemId, className, isCollapsed);
-		};
-		
-		if (legend) legend.addEventListener('click', toggleCollapse);
-		if (title) title.addEventListener('click', toggleCollapse);
-		
-		// Drag and drop handlers
-		fieldset.addEventListener('dragstart', function(e) {
-			fieldset.classList.add('dragging');
-			e.dataTransfer.effectAllowed = 'move';
-			e.dataTransfer.setData('text/plain', className);
-		});
-		
-		fieldset.addEventListener('dragend', function(e) {
-			fieldset.classList.remove('dragging');
-			// Remove all drag-over classes
-			var sections = infoContainer.querySelectorAll('.cbi-section.draggable');
-			sections.forEach(function(section) {
-				section.classList.remove('drag-over');
-			});
-		});
-		
-		fieldset.addEventListener('dragover', function(e) {
-			e.preventDefault();
-			e.dataTransfer.dropEffect = 'move';
-			
-			var draggingElement = infoContainer.querySelector('.dragging');
-			if (draggingElement && draggingElement !== fieldset) {
-				fieldset.classList.add('drag-over');
-			}
-		});
-		
-		fieldset.addEventListener('dragleave', function(e) {
-			fieldset.classList.remove('drag-over');
-		});
-		
-		fieldset.addEventListener('drop', function(e) {
-			e.preventDefault();
-			fieldset.classList.remove('drag-over');
-			
-			var draggedClassName = e.dataTransfer.getData('text/plain');
-			if (draggedClassName === className) {
-				return;
-			}
-			
-			// Get all sections in current order
-			var sections = Array.from(infoContainer.querySelectorAll('.cbi-section.draggable'));
-			var draggedSection = infoContainer.querySelector('.dragging');
-			
-			// Reorder in DOM
-			if (draggedSection) {
-				infoContainer.insertBefore(draggedSection, fieldset);
-			}
-			
-			// Save new order
-			var newOrder = Array.from(infoContainer.querySelectorAll('.cbi-section.draggable')).map(function(section) {
-				// Extract className from legend or title
-				var legend = section.querySelector('legend');
-				var title = section.querySelector('.panel-title');
-				return (legend && legend.textContent) || (title && title.textContent) || '';
-			}).filter(function(name) {
-				return name !== '';
-			});
-			
-			self.saveSectionOrder(modemId, newOrder);
-		});
-	},
-
-	updateModemInfo: function(modemId, tables_map, infoContainer, updateTimeElement, copyrightElement) {
-		var self = this;
-		
-		// Show loading state
-		if (Object.keys(tables_map).length === 0) {
-			dom.content(infoContainer, E('div', { 'class': 'spinning' }, _('Loading modem information...')));
-		}
-		
-		// Fetch all modem info
-		Promise.all([
-			qmodem.getBaseInfo(modemId),
-			qmodem.getSimInfo(modemId),
-			qmodem.getNetworkInfo(modemId),
-			qmodem.getCellInfo(modemId),
-			qmodem.getCopyright(modemId)
-		]).then(function(results) {
-			// Merge all modem_info arrays (exclude copyright)
-			var all_info = [];
-			for (var i = 0; i < results.length - 1; i++) {
-				if (results[i] && results[i].modem_info) {
-					all_info = all_info.concat(results[i].modem_info);
+			callGetCopyright(cur.id).then(function(c) {
+				var parts = [];
+				if (c && c.copyright) {
+					for (var k in c.copyright)
+						parts.push(_(k) + ': ' + c.copyright[k]);
 				}
-			}
-			
-			// Handle copyright (last result)
-			var copyrightData = results[results.length - 1];
-			if (copyrightElement && copyrightData && copyrightData.copyright) {
-				// Format copyright object into display string
-				var copyrightInfo = copyrightData.copyright;
-				var copyrightText = [];
-				for (var key in copyrightInfo) {
-					copyrightText.push(_(key) + ': ' + copyrightInfo[key]);
-				}
-				copyrightElement.textContent = copyrightText.join(' | ');
-				copyrightElement.style.display = '';
-			} else if (copyrightElement) {
-				copyrightElement.style.display = 'none';
-			}
-
-			// Group by class
-			var grouped = {};
-			all_info.forEach(function(entry) {
-				if (entry.type === 'warning_message') {
-					// Handle warning messages
-					return;
-				}
-				
-				var className = entry['class'] || 'General';
-				if (!grouped[className]) {
-					grouped[className] = [];
-				}
-				grouped[className].push(entry);
-			});
-
-			// Clear loading animation if present
-			var loadingDiv = infoContainer.querySelector('.spinning');
-			if (loadingDiv) {
-				infoContainer.removeChild(loadingDiv);
-			}
-
-			// Remove obsolete tables from DOM and map
-			for (var existingClass in tables_map) {
-				if (!grouped[existingClass]) {
-					if (tables_map[existingClass].fieldset.parentNode) {
-						infoContainer.removeChild(tables_map[existingClass].fieldset);
-					}
-					delete tables_map[existingClass];
-				}
-			}
-
-			// Get section order from localStorage
-			var sectionOrder = self.getSectionOrder(modemId);
-			var orderedClasses = [];
-			
-			// First add classes in saved order
-			sectionOrder.forEach(function(className) {
-				if (grouped[className]) {
-					orderedClasses.push(className);
-				}
-			});
-			
-			// Then add any new classes not in saved order
-			for (var className in grouped) {
-				if (orderedClasses.indexOf(className) === -1) {
-					orderedClasses.push(className);
-				}
-			}
-			
-			// Update or create tables in order
-			orderedClasses.forEach(function(className) {
-				if (!tables_map[className]) {
-					tables_map[className] = new LuciTable();
-					infoContainer.appendChild(tables_map[className].fieldset);
-					self.attachSectionHandlers(tables_map[className].fieldset, className, modemId, infoContainer);
-				}
-				tables_map[className].setTitle(className);
-				tables_map[className].setData(grouped[className]);
-				
-				// Restore collapsed state
-				var collapsedState = self.getCollapsedState(modemId, className);
-				if (collapsedState) {
-					tables_map[className].fieldset.classList.add('collapsed');
-				} else {
-					tables_map[className].fieldset.classList.remove('collapsed');
-				}
-			});
-			
-			// Update refresh time
-			if (updateTimeElement) {
-				var now = new Date();
-				var timeStr = now.getFullYear() + '-' + 
-					String(now.getMonth() + 1).padStart(2, '0') + '-' + 
-					String(now.getDate()).padStart(2, '0') + ' ' + 
-					String(now.getHours()).padStart(2, '0') + ':' + 
-					String(now.getMinutes()).padStart(2, '0') + ':' + 
-					String(now.getSeconds()).padStart(2, '0');
-				updateTimeElement.textContent = _('Last update') + ': ' + timeStr;
-			}
-		}).catch(function(e) {
-			console.error('Error fetching modem info:', e);
-			dom.content(infoContainer, E('div', { 'class': 'alert-message warning' },
-				_('Error loading modem information: %s').format(e.message)));
-		});
-	},
-
-	render: function() {
-		var self = this;
-		var modems = this.getModemList();
-		
-		if (modems.length === 0) {
-			return E('div', { 'class': 'alert-message warning' }, 
-				_('No modems configured or all modems are disabled.'));
+				refs.copyright.textContent = parts.join('　|　');
+			}).catch(function() { refs.copyright.textContent = ''; });
 		}
 
-		var container = E('div', { 'class': 'cbi-map' });
-		
-		// Create modem selector section
-		var selectorSection = E('fieldset', { 'class': 'cbi-section' });
-		var selectorTable = E('table', { 'class': 'table' });
-		var selectorBody = E('tbody', {});
-		var selectorRow = E('tr', { 'class': 'tr' });
-		var labelCell = E('td', { 'class': 'td', 'width': '33%' }, _('Modem Name'));
-		var selectCell = E('td', { 'class': 'td' });
-		
-		// Create select dropdown
-		var select = E('select', {
-			'class': 'cbi-input-select',
-			'id': 'modem_selector'
-		});
-		
-		modems.forEach(function(modem) {
-			select.appendChild(E('option', { 'value': modem.id }, modem.name));
-		});
-		
-		selectCell.appendChild(select);
-		selectorRow.appendChild(labelCell);
-		selectorRow.appendChild(selectCell);
-		selectorBody.appendChild(selectorRow);
-		selectorTable.appendChild(selectorBody);
-		selectorSection.appendChild(selectorTable);
-		container.appendChild(selectorSection);
-		
-		// Create copyright display
-		var copyrightDiv = E('div', { 
-			'class': 'copyright-section',
-			'style': 'display: none;'
-		});
-		container.appendChild(copyrightDiv);
-		
-		// Create update time display
-		var updateTimeSection = E('fieldset', { 'class': 'cbi-section' });
-		var updateTimeDiv = E('div', { 
-			'style': 'text-align: right; padding: 5px; color: #888;',
-			'id': 'update_time_display'
-		}, _('Last update') + ': -');
-		updateTimeSection.appendChild(updateTimeDiv);
-		container.appendChild(updateTimeSection);
-		
-		// Create info container
-		var infoContainer = E('div', { 'id': 'modem_info_container' });
-		container.appendChild(infoContainer);
-		
-		// Tables map to store LuciTable instances
-		var tables_map = {};
-		
-		// Update function
-		var updateInfo = function(clearTables) {
-			var selectedModem = select.value;
-			
-			// Clear tables when switching modem
-			if (clearTables) {
-				for (var className in tables_map) {
-					if (tables_map[className].fieldset.parentNode) {
-						infoContainer.removeChild(tables_map[className].fieldset);
-					}
-				}
-				tables_map = {};
+		function selectModem(id) {
+			cur = null;
+			for (var i = 0; i < modems.length; i++) {
+				if (modems[i].id === id)
+					cur = modems[i];
 			}
-			
-			self.updateModemInfo(selectedModem, tables_map, infoContainer, updateTimeDiv, copyrightDiv);
-		};
-		
-		// Selector change handler
-		select.addEventListener('change', function() {
-			updateInfo(true); // Clear tables when switching
-		});
-		
-		// Initial update
-		updateInfo(false);
-		
-		// Start polling (every 10 seconds)
-		poll.add(function() {
-			var selectedModem = select.value;
-			self.updateModemInfo(selectedModem, tables_map, infoContainer, updateTimeDiv, copyrightDiv);
-		}, 10);
-		
+			resetSpeedState();
+			refreshPauseUI();
+			updateCopyright();
+			updateModem();
+			updateSpeed();
+		}
+
+		select.addEventListener('change', function() { selectModem(select.value); });
+		cur = modems[0];
+		refreshPauseUI();
+		updateCopyright();
+
+		poll.add(updateSpeed, 2);
+		poll.add(updateModem, 5);
+		updateModem();
+		updateSpeed();
+
 		return container;
 	},
 

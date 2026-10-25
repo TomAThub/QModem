@@ -13,9 +13,14 @@ LUCI_PKGARCH:=all
 LUCI_MAINTAINER:=Tom <fjrcn@outlook.com>
 
 PKG_VERSION:=$(QMODEM_VERSION)
-PKG_RELEASE:=4
+PKG_RELEASE:=29
 PKG_LICENSE:=GPLv3
 PKG_PROVIDES:=qmodem-luci-ui
+
+define Package/luci-app-qmodem-next/postinst
+#!/bin/sh
+[ -n "$$IPKG_INSTROOT" ] || /etc/init.d/rpcd restart
+endef
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

@@ -2,11 +2,22 @@
 'require view';
 'require ui';
 'require dom';
+'require uci';
 'require qmodem.qmodem as qmodem';
+
+/* uci.commit() was replaced by uci.save()+apply() in newer LuCI */
+function uciCommit(conf) {
+	if (typeof uci.commit === 'function')
+		return Promise.resolve(uci.commit(conf));
+	return uci.save().then(function() { return uci.apply(10); });
+}
 
 return view.extend({
 	load: function() {
-		return qmodem.getModemSections();
+		return Promise.all([
+			qmodem.getModemSections(),
+			uci.load('cpe-dashboard').catch(function() {})
+		]).then(function(res) { return res[0]; });
 	},
 
 	render: function(modems) {
@@ -59,7 +70,7 @@ return view.extend({
 			var selectedModem = modems.find(function(m) { return m.id === selectedId; });
 			
 			if (selectedModem) {
-				dom.content(interfaceContainer, self.createAtInterface(selectedModem));
+				dom.content(interfaceContainer, self.createAtInterface(selectedModem, updateInterface));
 			}
 		};
 
@@ -72,7 +83,7 @@ return view.extend({
 		return container;
 	},
 
-	createAtInterface: function(modem) {
+	createAtInterface: function(modem, reload) {
 		var self = this;
 		var container = E('div', { 'class': 'cbi-section-node' });
 
@@ -216,12 +227,25 @@ return view.extend({
 			responseSection.appendChild(responseField);
 			container.appendChild(responseSection);
 
-			// Quick commands
+			// Quick commands: built-in (translated) + user defined
+			var quickSection = E('div', { 'class': 'cbi-value' });
+			quickSection.appendChild(E('label', { 'class': 'cbi-value-title' }, _('Quick Commands')));
+			var quickField = E('div', { 'class': 'cbi-value-field cbi-section-actions' });
+
+			// user defined commands first (newest added on top), then built-in
+			uci.sections('cpe-dashboard', 'at_cmd').slice().reverse().forEach(function(s) {
+				if (!s.value)
+					return;
+				quickField.appendChild(E('button', {
+					'class': 'btn cbi-button-positive',
+					'click': function() {
+						document.getElementById('at_command_' + modem.id).value = s.value;
+					}
+				}, s.name || s.value));
+				quickField.appendChild(document.createTextNode(' '));
+			});
+
 			if (cfg.at_cfg.cmds && cfg.at_cfg.cmds.length > 0) {
-				var quickSection = E('div', { 'class': 'cbi-value' });
-				quickSection.appendChild(E('label', { 'class': 'cbi-value-title' }, _('Quick Commands')));
-				var quickField = E('div', { 'class': 'cbi-value-field cbi-section-actions' });
-				
 				cfg.at_cfg.cmds.forEach(function(cmd) {
 					if (cmd.name && cmd.value) {
 						quickField.appendChild(E('button', {
@@ -229,19 +253,95 @@ return view.extend({
 							'click': function() {
 								document.getElementById('at_command_' + modem.id).value = cmd.value;
 							}
-						}, cmd.name));
+						}, _(cmd.name)));
 						quickField.appendChild(document.createTextNode(' '));
 					}
 				});
-				
-				quickSection.appendChild(quickField);
-				container.appendChild(quickSection);
 			}
+
+			quickSection.appendChild(quickField);
+			container.appendChild(quickSection);
+
+			container.appendChild(self.buildCustomManager(reload));
 		}).catch(function(e) {
 			dom.content(portInfo, _('Error loading AT configuration: %s').format(e.message));
 		});
 
 		return container;
+	},
+
+	buildCustomManager: function(reload) {
+		var dels = [];
+		var section = E('div', { 'class': 'cbi-value' });
+		section.appendChild(E('label', { 'class': 'cbi-value-title' }, '自訂快速指令'));
+		var field = E('div', { 'class': 'cbi-value-field', 'style': 'display:block; width:100%' });
+		var list = E('div', { 'style': 'width:100%' });
+
+		function addRow(id, name, value) {
+			var nameInput = E('input', { 'type': 'text', 'class': 'cbi-input-text',
+				'style': 'flex:1 1 auto; min-width:0; box-sizing:border-box',
+				'placeholder': '指令名稱', 'value': name || '' });
+			var valInput = E('input', { 'type': 'text', 'class': 'cbi-input-text',
+				'style': 'flex:1 1 auto; min-width:0; box-sizing:border-box',
+				'placeholder': 'AT+...', 'value': value || '' });
+			var delBtn = E('button', { 'class': 'btn cbi-button-negative',
+				'style': 'flex:0 0 auto', 'click': function() {
+				if (box.dataset.uciid)
+					dels.push(box.dataset.uciid);
+				box.parentNode.removeChild(box);
+			} }, '刪除');
+			var box = E('div', { 'class': 'at-cmd-row',
+				'style': 'margin:6px 0; padding:8px; border:1px solid rgba(0,0,0,.25); border-radius:4px' }, [
+				E('div', { 'style': 'display:flex; gap:6px; align-items:center' }, [
+					E('span', { 'style': 'flex:0 0 42px' }, '名稱'), nameInput ]),
+				E('div', { 'style': 'display:flex; gap:6px; align-items:center; margin-top:4px' }, [
+					E('span', { 'style': 'flex:0 0 42px' }, '指令'), valInput, delBtn ])
+			]);
+			if (id)
+				box.dataset.uciid = id;
+			// newest on top
+			list.insertBefore(box, list.firstChild);
+		}
+
+		// iterate in config order; prepending puts newest on top
+		uci.sections('cpe-dashboard', 'at_cmd').forEach(function(s) {
+			addRow(s['.name'], s.name, s.value);
+		});
+
+		var addBtn = E('button', { 'class': 'btn cbi-button-add', 'click': function() {
+			addRow(null, '', '');
+		} }, '新增指令');
+
+		var saveBtn = E('button', { 'class': 'btn cbi-button-positive', 'click': function() {
+			Array.prototype.forEach.call(list.querySelectorAll('.at-cmd-row'), function(row) {
+				var inputs = row.querySelectorAll('input');
+				var name = inputs[0].value.trim();
+				var value = inputs[1].value.trim();
+				if (!value)
+					return;
+				var id = row.dataset.uciid;
+				if (!id) {
+					id = 'quick' + Math.random().toString(36).slice(2, 10);
+					row.dataset.uciid = id;
+					uci.add('cpe-dashboard', 'at_cmd', id);
+				}
+				uci.set('cpe-dashboard', id, 'name', name || value);
+				uci.set('cpe-dashboard', id, 'value', value);
+			});
+			dels.forEach(function(id) { uci.remove('cpe-dashboard', id); });
+			dels.length = 0;
+			uciCommit('cpe-dashboard').then(function() {
+				if (reload)
+					reload();
+			});
+		} }, '儲存');
+
+		field.appendChild(list);
+		field.appendChild(E('div', { 'style': 'margin-top:8px' }, [addBtn, ' ', saveBtn]));
+		field.appendChild(E('div', { 'style': 'margin-top:6px; font-size:90%' },
+			'自訂指令會以綠色按鈕顯示在上方快速指令列最前方（最新新增的排第一）；增修刪除後按「儲存」寫入 /etc/config/cpe-dashboard。'));
+		section.appendChild(field);
+		return section;
 	},
 
 	handleSaveApply: null,

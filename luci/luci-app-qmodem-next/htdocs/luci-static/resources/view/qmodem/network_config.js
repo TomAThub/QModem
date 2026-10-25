@@ -15,13 +15,35 @@ var callInitAction = rpc.declare({
 	expect: { result: false }
 });
 
+/* toast shown above modals (ui.addNotification renders behind open modals) */
+function apnNotify(msg, type) {
+	var box = E('div', {
+		'style': 'position:fixed; top:16px; left:50%; transform:translateX(-50%); z-index:99999;' +
+			'padding:10px 18px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,.4);' +
+			'background:' + (type === 'error' ? '#c33' : '#2a7') + '; color:#fff; max-width:80%'
+	}, msg);
+	document.body.appendChild(box);
+	setTimeout(function() {
+		if (box.parentNode)
+			box.parentNode.removeChild(box);
+	}, 4000);
+}
+
+/* uci.commit() was replaced by uci.save()+apply() in newer LuCI */
+function uciCommit(conf) {
+	if (typeof uci.commit === 'function')
+		return Promise.resolve(uci.commit(conf));
+	return uci.save().then(function() { return uci.apply(10); });
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
 			uci.load('qmodem'),
+			uci.load('cpe-dashboard').catch(function() {}),
 			qmodem.rcStatus('qmodem_network')
 		]).then(L.bind(function(results) {
-			this.rcStatusData = results[1];
+			this.rcStatusData = results[2];
 			
 			// Load connection status for all modem devices
 			var sections = uci.sections('qmodem', 'modem-device');
@@ -301,6 +323,34 @@ return view.extend({
 			]);
 		};
 
+	// Currently used APN (live, from modem network info)
+	o = s.option(form.DummyValue, '_cur_apn', '目前 APN');
+	o.rawhtml = true;
+	o.editable = true;
+	o.cfgvalue = function(section_id) {
+		var cfg = uci.get('qmodem', section_id, 'apn') || '';
+		return E('span', { 'class': 'cur-apn', 'data-section': section_id, 'style': 'word-break:break-all' }, cfg || '自動選擇');
+	};
+
+	// Roaming on/off switch (Quectel AT+QNWPREFCFG="roam_pref")
+	o = s.option(form.DummyValue, '_roaming', '漫遊');
+	o.rawhtml = true;
+	o.editable = true;
+	o.cfgvalue = L.bind(function(section_id) {
+		var self = this;
+		var on = uci.get('qmodem', section_id, 'roaming') !== '0';
+		var btn = E('button', {
+			'class': 'btn roaming-btn ' + (on ? 'cbi-button-positive' : 'cbi-button-negative'),
+			'style': 'white-space:nowrap',
+			'data-section': section_id,
+			'title': on ? '允許漫遊：自動註冊含漫遊（roam_pref=255）' : '關閉漫遊：僅註冊家網（roam_pref=1）'
+		}, on ? '開啟' : '關閉');
+		btn.addEventListener('click', function() {
+			self.toggleRoaming(section_id, btn);
+		});
+		return btn;
+	}, this);
+
 	// ============ Modal Configuration Options ============
 	
 	// General Settings
@@ -383,44 +433,145 @@ return view.extend({
 	o.rmempty = true;
 	o.modalonly = true;
 	o.value('', _('Auto Choose'));
-	o.value('cmnet', _('China Mobile (CN)'));
-	o.value('3gnet', _('China Unicom (CN)'));
-	o.value('ctnet', _('China Telecom (CN)'));
-	o.value('cbnet', _('China Broadcast (CN)'));
-	o.value('5gscuiot', _('Skytone (CN)'));
-	// Switzerland (CH)
-	o.value('gprs.swisscom.ch', _('Swisscom (CH)'));
-	o.value('internet', 'Salt (CH), Sunrise (CH), O2 (DE), 1&1 (DE)');
-	// Germany (DE)
-	o.value('web.vodafone.de', _('Vodafone (DE)'));
-	o.value('internet.telekom', _('Telekom (DE)'));
-	o.value('internet.eplus.de', _('E-Plus (DE)'));
-	// Austria (AT)
-	o.value('A1.net', _('A1 (AT)'));
-	o.value('drei.at', _('Drei (AT)'));
-	o.value('internet.t-mobile.at', _('Magenta (AT)'));
-	// Philippines (PH)
-	o.value('http.globe.com.ph', _('Globe Prepaid (PH)'));
-	o.value('internet.globe.com.ph', _('Globe Postpaid (PH)'));
-	o.value('internet', _('Smart Communications (PH)'));
-	o.value('internet.dito.ph', _('Dito Telecomunity (PH)'));
-	// Malaysia (MY)
-	o.value('celcom3g', _('Celcom (MY)'));
-	o.value('diginet', _('DiGi (MY)'));
-	o.value('unet', _('Maxis | Hotlink (MY)'));
-	o.value('hos', _('Maxis UT (MY)'));
-	o.value('yes4g', _('YES (MY)'));
-	o.value('my3g', _('UMobile (MY)'));
-	o.value('unifi', _('Unifi (MY)'));
-	// Russia (RU)
-	o.value('internet.beeline.ru', _('Beeline (RU)'));
-	o.value('internet.mts.ru', _('MTS (RU)'));
-	o.value('internet', _('Megafon (RU)'));
-	o.value('internet.tele2.ru', _('Tele2 (RU)'));
-	o.value('internet.yota', _('Yota (RU)'));
-	o.value('m.tinkoff', _('T-mobile (RU)'));
-	o.value('internet.rtk.ru', _('Rostelecom (RU)'));
-	o.value('internet.sberbank-tele.com', _('Sber Mobile (RU)'));
+	o.value('internet', 'internet');
+	uci.sections('cpe-dashboard', 'apn_profile').forEach(function(p) {
+		if (p.apn)
+			o.value(p.apn, (p.name || p.apn) + ' (' + p.apn + ')');
+	});
+
+	// APN profile manager: profiles are stored in /etc/config/cpe-dashboard
+	o = s.option(form.DummyValue, '_apn_mgr', 'APN 設定檔');
+	o.rawhtml = true;
+	o.modalonly = true;
+	o.cfgvalue = L.bind(function(section_id) {
+		var sel, nameI;
+
+		function fillSel() {
+			while (sel.firstChild)
+				sel.removeChild(sel.firstChild);
+			sel.appendChild(E('option', { 'value': '' }, '— 選擇設定檔 —'));
+			uci.sections('cpe-dashboard', 'apn_profile').forEach(function(p) {
+				if (p.apn || p.name)
+					sel.appendChild(E('option', { 'value': p['.name'] }, (p.name || p.apn) + (p.apn ? ' (' + p.apn + ')' : '')));
+			});
+		}
+
+		function field(name) {
+			return document.getElementById('cbid.qmodem.' + section_id + '.' + name);
+		}
+
+		function getVal(name) {
+			var el = field(name);
+			return el ? String(el.value).trim() : '';
+		}
+
+		function setVal(name, val) {
+			var el = field(name);
+			if (!el)
+				return;
+			/* ListValue/Combobox fields render as div.cbi-dropdown widgets:
+			   the value must be selected via a select event on the option li */
+			if (el.classList && el.classList.contains('cbi-dropdown')) {
+				var li = val === ''
+					? el.querySelector('ul > li[placeholder]')
+					: el.querySelector('ul > li[data-value="' + val + '"]');
+				if (li)
+					li.dispatchEvent(new CustomEvent('cbi-dropdown-select', { 'bubbles': true }));
+				else if (val !== '')
+					apnNotify('值「' + val + '」不在「' + name + '」選項中，重新開啟編輯視窗後可選', 'error');
+				return;
+			}
+			el.value = val;
+			el.dispatchEvent(new Event('change', { 'bubbles': true }));
+		}
+
+		function currentProfile(name) {
+			return {
+				name: name,
+				apn: getVal('apn'),
+				protocol: getVal('pdp_type'),
+				auth: getVal('auth'),
+				username: getVal('username'),
+				password: getVal('password')
+			};
+		}
+
+		function saveProfile(id, p, msg) {
+			if (!uci.get('cpe-dashboard', id))
+				uci.add('cpe-dashboard', 'apn_profile', id);
+			uci.set('cpe-dashboard', id, 'name', p.name);
+			uci.set('cpe-dashboard', id, 'apn', p.apn);
+			uci.set('cpe-dashboard', id, 'protocol', p.protocol || 'ipv4v6');
+			uci.set('cpe-dashboard', id, 'auth', p.auth || 'none');
+			if (p.username)
+				uci.set('cpe-dashboard', id, 'username', p.username);
+			else
+				uci.unset('cpe-dashboard', id, 'username');
+			if (p.password)
+				uci.set('cpe-dashboard', id, 'password', p.password);
+			else
+				uci.unset('cpe-dashboard', id, 'password');
+			uciCommit('cpe-dashboard').then(function() {
+				fillSel();
+				nameI.value = '';
+				apnNotify(msg + '「' + (p.name || p.apn) + '」');
+			}).catch(function(e) {
+				apnNotify('儲存失敗：' + e.message, 'error');
+			});
+		}
+
+		sel = E('select', { 'class': 'cbi-input-select' });
+		nameI = E('input', { 'type': 'text', 'class': 'cbi-input-text', 'placeholder': '設定檔名稱（留空＝用 APN）' });
+
+		var loadBtn = E('button', { 'class': 'btn cbi-button-action', 'click': function() {
+			if (!sel.value) {
+				apnNotify('請先選擇設定檔', 'error');
+				return;
+			}
+			var p = uci.get('cpe-dashboard', sel.value) || {};
+			setVal('apn', p.apn || '');
+			if (p.protocol)
+				setVal('pdp_type', p.protocol);
+			setVal('auth', p.auth || 'none');
+			setVal('username', p.username || '');
+			setVal('password', p.password || '');
+		} }, '載入');
+
+		var addBtn = E('button', { 'class': 'btn cbi-button-add', 'click': function() {
+			var apn = getVal('apn');
+			if (!apn) {
+				apnNotify('請先在上方的 APN 欄位輸入或選擇 APN，再按「新增」', 'error');
+				return;
+			}
+			var id = 'apn' + Math.random().toString(36).slice(2, 10);
+			saveProfile(id, currentProfile(nameI.value.trim() || apn), '已新增設定檔');
+		} }, '新增');
+
+		var updBtn = E('button', { 'class': 'btn cbi-button-change', 'click': function() {
+			if (!sel.value) {
+				apnNotify('請先選擇要更新的設定檔', 'error');
+				return;
+			}
+			var old = uci.get('cpe-dashboard', sel.value) || {};
+			saveProfile(sel.value, currentProfile(nameI.value.trim() || old.name || getVal('apn')), '已更新設定檔');
+		} }, '更新');
+
+		var delBtn = E('button', { 'class': 'btn cbi-button-negative', 'click': function() {
+			if (!sel.value) {
+				apnNotify('請先選擇要刪除的設定檔', 'error');
+				return;
+			}
+			uci.remove('cpe-dashboard', sel.value);
+			uciCommit('cpe-dashboard').then(function() {
+				fillSel();
+			});
+		} }, '刪除');
+
+		fillSel();
+
+		return E('div', { 'style': 'display:flex; gap:6px; flex-wrap:wrap; align-items:center' },
+			[sel, nameI, loadBtn, addBtn, updBtn, delBtn]);
+	}, this);
 
 	o = s.option(form.ListValue, 'auth', _('Authentication Type'));
 	o.value('none', _('NONE'));
@@ -460,44 +611,11 @@ return view.extend({
 	o.rmempty = true;
 	o.modalonly = true;
 	o.value('', _('Auto Choose'));
-	o.value('cmnet', _('China Mobile (CN)'));
-	o.value('3gnet', _('China Unicom (CN)'));
-	o.value('ctnet', _('China Telecom (CN)'));
-	o.value('cbnet', _('China Broadcast (CN)'));
-	o.value('5gscuiot', _('Skytone (CN)'));
-	// Switzerland (CH)
-	o.value('gprs.swisscom.ch', _('Swisscom (CH)'));
-	o.value('internet', 'Salt (CH), Sunrise (CH), O2 (DE), 1&1 (DE)');
-	// Germany (DE)
-	o.value('web.vodafone.de', _('Vodafone (DE)'));
-	o.value('internet.telekom', _('Telekom (DE)'));
-	o.value('internet.eplus.de', _('E-Plus (DE)'));
-	// Austria (AT)
-	o.value('A1.net', _('A1 (AT)'));
-	o.value('drei.at', _('Drei (AT)'));
-	o.value('internet.t-mobile.at', _('Magenta (AT)'));
-	// Philippines (PH)
-	o.value('http.globe.com.ph', _('Globe Prepaid (PH)'));
-	o.value('internet.globe.com.ph', _('Globe Postpaid (PH)'));
-	o.value('internet', _('Smart Communications (PH)'));
-	o.value('internet.dito.ph', _('Dito Telecomunity (PH)'));
-	// Malaysia (MY)
-	o.value('celcom3g', _('Celcom (MY)'));
-	o.value('diginet', _('DiGi (MY)'));
-	o.value('unet', _('Maxis | Hotlink (MY)'));
-	o.value('hos', _('Maxis UT (MY)'));
-	o.value('yes4g', _('YES (MY)'));
-	o.value('my3g', _('UMobile (MY)'));
-	o.value('unifi', _('Unifi (MY)'));
-	// Russia (RU)
-	o.value('internet.beeline.ru', _('Beeline (RU)'));
-	o.value('internet.mts.ru', _('MTS (RU)'));
-	o.value('internet', _('Megafon (RU)'));
-	o.value('internet.tele2.ru', _('Tele2 (RU)'));
-	o.value('internet.yota', _('Yota (RU)'));
-	o.value('m.tinkoff', _('T-mobile (RU)'));
-	o.value('internet.rtk.ru', _('Rostelecom (RU)'));
-	o.value('internet.sberbank-tele.com', _('Sber Mobile (RU)'));
+	o.value('internet', 'internet');
+	uci.sections('cpe-dashboard', 'apn_profile').forEach(function(p) {
+		if (p.apn)
+			o.value(p.apn, (p.name || p.apn) + ' (' + p.apn + ')');
+	});
 
 	o = s.option(form.Value, 'metric', _('Metric'));
 	o.description = _('The metric value is used to determine the priority of the route. The smaller the value, the higher the priority. Cannot duplicate.');
@@ -548,6 +666,11 @@ return view.extend({
 			this.startStatusIndicatorPolling();
 			// Start polling for RC status
 			this.startRcStatusPolling();
+			// Show and poll currently used APN
+			this.updateAllApnDisplays();
+			this.startApnPolling();
+			// Sync roaming buttons with modem state once
+			this.updateRoamingDisplays();
 			return rendered;
 		}, this));
 	},
@@ -722,6 +845,176 @@ return view.extend({
 		poll.add(L.bind(function() {
 			this.updateRcStatus();
 		}, this), 10);
+	},
+
+	updateAllApnDisplays: function() {
+		uci.sections('qmodem', 'modem-device').forEach(L.bind(function(section) {
+			this.updateApnDisplay(section['.name']);
+		}, this));
+	},
+
+	updateApnDisplay: function(section_id) {
+		var els = document.querySelectorAll('span.cur-apn[data-section="' + section_id + '"]');
+		if (!els.length)
+			return;
+		var self = this;
+		var setAll = function(text, title) {
+			for (var i = 0; i < els.length; i++) {
+				els[i].textContent = text;
+				els[i].title = title;
+			}
+		};
+		var done = false;
+		var atPort = uci.get('qmodem', section_id, 'at_port') || '';
+		// 1) AT+CGCONTRDP: active PDP context -> the APN actually used on the line
+		qmodem.sendAt(section_id, atPort, 'AT+CGCONTRDP', '1').then(function(result) {
+			var res = (result && result.at_cfg && result.at_cfg.res) ? String(result.at_cfg.res) : '';
+			var lines = res.match(/\+CGCONTRDP:[^\r\n]*/gi) || [];
+			var want = parseInt(uci.get('qmodem', section_id, 'pdp_index') || '1', 10);
+			var first = null, pick = null;
+			lines.forEach(function(line) {
+				var m = /\+CGCONTRDP:\s*(\d+)\s*,(.*)/.exec(line);
+				if (!m)
+					return;
+				var fields = String(m[2]).split(','), apn = null;
+				for (var i = 0; i < fields.length && !apn; i++) {
+					var f = String(fields[i]).trim().replace(/^"+|"+$/g, '');
+					if (!f || /^\d+$/.test(f) || /^[0-9.]+( [0-9.]+)?$/.test(f) || /^(IP|IPV4|IPV6|IPV4V6|IPV6V4|ETHERNET|PPP)$/i.test(f))
+						continue;
+					apn = f;
+				}
+				if (!apn)
+					return;
+				if (first === null)
+					first = apn;
+				if (parseInt(m[1], 10) === want)
+					pick = apn;
+			});
+			return pick || first;
+		}).then(function(apn) {
+			if (apn) {
+				done = true;
+				setAll(apn, 'AT+CGCONTRDP 查詢結果（模組撥號實際使用的 APN）');
+				return;
+			}
+			// 2) AT+CGDCONT?: defined contexts (empty APN = carrier assigns automatically)
+			return qmodem.sendAt(section_id, atPort, 'AT+CGDCONT?', '1').then(function(result) {
+				var res = (result && result.at_cfg && result.at_cfg.res) ? String(result.at_cfg.res) : '';
+				var lines = res.match(/\+CGDCONT:\s*\d+\s*,\s*"[^"]*"\s*,\s*"[^"]*"/g) || [];
+				var want = parseInt(uci.get('qmodem', section_id, 'pdp_index') || '1', 10);
+				var first = null, pick = null;
+				lines.forEach(function(line) {
+					var m = /\+CGDCONT:\s*(\d+)\s*,\s*"[^"]*"\s*,\s*"([^"]*)"/.exec(line);
+					if (!m || !m[2])
+						return;
+					if (first === null)
+						first = m[2];
+					if (parseInt(m[1], 10) === want)
+						pick = m[2];
+				});
+				return pick || first;
+			});
+		}).then(function(apn) {
+			if (done)
+				return;
+			if (apn) {
+				done = true;
+				setAll(apn, 'AT+CGDCONT? 查詢結果（模組設定的 APN）');
+				return;
+			}
+			self.updateApnDisplayFallback(section_id, setAll);
+		}).catch(function() {
+			if (!done)
+				self.updateApnDisplayFallback(section_id, setAll);
+		});
+	},
+
+	updateApnDisplayFallback: function(section_id, setAll) {
+		qmodem.getNetworkInfo(section_id).then(L.bind(function(info) {
+			var apn = null;
+			var list = (info && Array.isArray(info.modem_info)) ? info.modem_info : [];
+			list.forEach(function(e) {
+				if (!e || !e.key || e.value == null || String(e.value) === '')
+					return;
+				var k = String(e.key).toUpperCase();
+				if (k === 'APN')
+					apn = String(e.value);
+				else if (!apn && k.indexOf('APN') !== -1 && k.indexOf('APN2') === -1)
+					apn = String(e.value);
+			});
+			if (!apn)
+				apn = uci.get('qmodem', section_id, 'apn') || '';
+			setAll(apn || '自動選擇', apn ? '模組即時資訊回報的 APN' : '模組未回報實際 APN（由電信商動態指派），顯示設定值');
+		}, this)).catch(L.bind(function() {
+			var cfg = uci.get('qmodem', section_id, 'apn') || '';
+			setAll(cfg || '自動選擇', '無法取得模組即時資訊，顯示設定值');
+		}, this));
+	},
+
+	startApnPolling: function() {
+		poll.add(L.bind(function() {
+			this.updateAllApnDisplays();
+		}, this), 5);
+	},
+
+	toggleRoaming: function(section_id, btn) {
+		var self = this;
+		var on = uci.get('qmodem', section_id, 'roaming') !== '0';
+		var want = !on;
+		var atRes = function(r) {
+			return (r && r.at_cfg && r.at_cfg.res) ? String(r.at_cfg.res) : '';
+		};
+		var setCfg = function(val) {
+			uci.set('qmodem', section_id, 'roaming', val);
+			return uciCommit('qmodem');
+		};
+
+		btn.classList.add('disabled');
+		btn.textContent = '設定中…';
+
+		/* Quectel roam_pref: 1 = home only, 2 = roaming only, 255 = any */
+		var atPort = uci.get('qmodem', section_id, 'at_port') || '';
+		var cmd = want ? 'AT+QNWPREFCFG="roam_pref",255' : 'AT+QNWPREFCFG="roam_pref",1';
+		qmodem.sendAt(section_id, atPort, cmd, '1').then(function(r) {
+			var res = atRes(r);
+			if (res.indexOf('OK') === -1)
+				throw new Error('模組回應：' + res.replace(/[\r\n]+/g, ' '));
+			return setCfg(want ? '1' : '0');
+		}).then(function() {
+			self.paintRoamingBtn(btn, want);
+			apnNotify(want ? '漫遊已開啟（roam_pref=255，自動註冊含漫遊）' : '漫遊已關閉（roam_pref=1，僅註冊家網）');
+		}).catch(function(e) {
+			self.paintRoamingBtn(btn, on);
+			apnNotify('漫遊設定失敗：' + e.message, 'error');
+		});
+	},
+
+	paintRoamingBtn: function(btn, on) {
+		btn.classList.remove('cbi-button-positive', 'cbi-button-negative', 'disabled');
+		btn.classList.add(on ? 'cbi-button-positive' : 'cbi-button-negative');
+		btn.textContent = on ? '開啟' : '關閉';
+		btn.title = on ? '允許漫遊：自動註冊含漫遊（roam_pref=255）' : '關閉漫遊：僅註冊家網（roam_pref=1）';
+	},
+
+	// sync roaming buttons with the actual modem state once per page load
+	updateRoamingDisplays: function() {
+		uci.sections('qmodem', 'modem-device').forEach(L.bind(function(section) {
+			var sid = section['.name'];
+			var btn = document.querySelector('button.roaming-btn[data-section="' + sid + '"]');
+			if (!btn)
+				return;
+			qmodem.sendAt(sid, section.at_port || '', 'AT+QNWPREFCFG="roam_pref"', '1').then(L.bind(function(r) {
+				var res = (r && r.at_cfg && r.at_cfg.res) ? String(r.at_cfg.res) : '';
+				var m = /\+QNWPREFCFG:\s*roam_pref\s*,\s*(\d+)/i.exec(res);
+				if (!m)
+					return;
+				var on = m[1] !== '1';
+				uci.set('qmodem', sid, 'roaming', on ? '1' : '0');
+				this.paintRoamingBtn(btn, on);
+				if (m[1] === '2')
+					btn.title = '模組目前為「僅限漫遊」（roam_pref=2）';
+			}, this)).catch(function() {});
+		}, this));
 	},
 
 	updateRcStatus: function() {

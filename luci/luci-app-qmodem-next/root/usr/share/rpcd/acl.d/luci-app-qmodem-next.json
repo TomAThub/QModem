@@ -10,9 +10,10 @@
 					"status", "config_get", "sync_status", "list", "get", "modem_list", "storage_get"
 				],
 				"rc" : [ "list" ,"init"],
-				"uci": [ "qmodem", "sms_forwarder" ]
+				"network.interface": [ "status", "dump" ],
+				"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
 			},
-			"uci": [ "qmodem", "sms_forwarder" ]
+			"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
 		},
 		"write": {
 			"ubus": {
@@ -39,9 +40,9 @@
 					"configure", "sync", "send", "delete", "mark_read",
 					"modem_delete", "storage_set"
 				],
-				"uci": [ "qmodem", "sms_forwarder" ]
+				"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
 			},
-			"uci": [ "qmodem", "sms_forwarder" ]
+			"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
 		}
 	},
 	"luci-mod-status-index": {

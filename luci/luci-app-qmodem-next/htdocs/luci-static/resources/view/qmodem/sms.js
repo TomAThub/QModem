@@ -465,7 +465,7 @@ return view.extend({
 			// Add click handler
 			row.addEventListener('click', L.bind(function(contact) {
 				L.ui.showModal(_('Loading...'), E('div', { 'class': 'spinning' }));
-				window.location.href = L.url('admin/modem/qmodem/sms/conversation', encodeURIComponent(contact));
+				window.location.href = L.url('admin/cpe/sms/conversation', encodeURIComponent(contact));
 			}, this, conv.contact));
 
 			tbody.appendChild(row);
@@ -609,7 +609,7 @@ return view.extend({
 								ui.addNotification(null, E('p', _('Message sent successfully')), 'info');
 								// Navigate to the conversation
 								setTimeout(function() {
-									window.location.href = L.url('admin/modem/qmodem/sms/conversation', encodeURIComponent(phone));
+									window.location.href = L.url('admin/cpe/sms/conversation', encodeURIComponent(phone));
 								}, 500);
 							}
 						}).catch(function(err) {

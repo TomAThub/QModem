@@ -1,0 +1,2 @@
+config dashboard 'main'
+	option webui_url 'http://192.168.225.1'

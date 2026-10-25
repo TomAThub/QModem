@@ -152,7 +152,15 @@ return L.Class.extend({
 		return callStorageSet(configSection || 'modem_1', mem1, mem2, mem3 || mem2).then(function(result) { result.success = result.status !== 'error'; return result; });
 	},
 	getSimSms: function(configSection) {
-		return listRaw(configSection || 'modem_1').then(function(result) { return { messages: result.msg || result.received || result.messages || [] }; });
+		return listRaw(configSection || 'modem_1').then(function(result) {
+			var list = result.msg || result.received || result.messages || [];
+			/* database mode rows carry no SIM memory index; the delete call
+			   accepts the database id in that mode, so expose it as index */
+			for (var i = 0; i < list.length; i++)
+				if (list[i].index == null && list[i].id != null)
+					list[i].index = list[i].id;
+			return { messages: list };
+		});
 	},
 	deleteSimSms: function(configSection, index) {
 		return callDelete(configSection || 'modem_1', index, index).then(function(result) { result.success = result.status === 'success'; return result; });
