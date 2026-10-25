@@ -499,43 +499,88 @@ return view.extend({
 			   /proc/net/if_inet6 as a fallback */
 			callInterfaceDump().then(function(d) {
 				/* rpc expect unwrapping already yields the interface array */
-				var list = Array.isArray(d) ? d : ((d && d.interface) || []), st = null;
+				var list = Array.isArray(d) ? d : ((d && d.interface) || []),
+					st = null;
+
 				list.forEach(function(i) {
 					if (!st && (i.interface === cur.ifname || i.interface === cur.id))
 						st = i;
 				});
-				return st;
-			}).then(function(st) {
-				var ip = null, gw = null, gw6 = null, dns = [], ip6 = [], dev = null;
 
-				function routeNexthop(r) {
-					return r.nexthop || r.gateway || null;
-				}
+				var ip = null, gw = null, gw6 = null, dns = [], ip6 = [],
+					prefix6 = null, dev = null;
 
-				if (st) {
-					dev = st.l3_device || st.device || null;
-					if (st['ipv4-address'] && st['ipv4-address'].length)
-						ip = st['ipv4-address'][0].address + '/' + st['ipv4-address'][0].mask;
-					if (st.route)
-						st.route.forEach(function(r) {
+				function collect(e) {
+					if (!e)
+						return;
+
+					if (dev == null)
+						dev = e.l3_device || e.device || null;
+					if (ip == null && e['ipv4-address'] && e['ipv4-address'].length)
+						ip = e['ipv4-address'][0].address + '/' + e['ipv4-address'][0].mask;
+					if (e.route)
+						e.route.forEach(function(r) {
 							if (!r)
 								return;
 							if (gw == null && r.target === '0.0.0.0' && r.mask === 0)
-								gw = routeNexthop(r);
+								gw = r.nexthop || r.gateway || null;
 							if (gw6 == null && r.target === '::' && r.mask === 0)
-								gw6 = routeNexthop(r);
+								gw6 = r.nexthop || r.gateway || null;
 						});
-					if (st['dns-server'])
-						st['dns-server'].forEach(function(d) {
-							var a = (typeof d === 'string') ? d : (d && d.address);
-							if (a)
-								dns.push(a);
+					if (e['dns-server'])
+						e['dns-server'].forEach(function(a) {
+							var s = (typeof a === 'string') ? a : (a && a.address);
+							if (s && dns.indexOf(s) === -1)
+								dns.push(s);
 						});
-					if (st['ipv6-address'])
-						st['ipv6-address'].forEach(function(a) {
-							if (a && a.address)
+					if (e['ipv6-address'])
+						e['ipv6-address'].forEach(function(a) {
+							if (a && a.address && ip6.indexOf(a.address + '/' + a.mask) === -1)
 								ip6.push(a.address + '/' + a.mask);
 						});
+					/* like network.js getIP6Addrs: prefix assignment local
+					   addresses count as interface addresses as well */
+					if (e['ipv6-prefix-assignment'])
+						e['ipv6-prefix-assignment'].forEach(function(p) {
+							var la = p && p['local-address'];
+							if (la && la.address && ip6.indexOf(la.address + '/' + la.mask) === -1)
+								ip6.push(la.address + '/' + la.mask);
+						});
+					if (!prefix6 && e['ipv6-prefix'] && e['ipv6-prefix'].length &&
+					    e['ipv6-prefix'][0].address)
+						prefix6 = e['ipv6-prefix'][0].address + '/' + e['ipv6-prefix'][0].mask;
+				}
+
+				collect(st);
+
+				/* mirror luci-mod-dashboard getWAN6Networks: when our own
+				   interface carries no IPv6 at all, fall back to the
+				   interface holding the IPv6 default route */
+				if (!ip6.length && gw6 == null && prefix6 == null) {
+					var best = null, bestMetric = 2000000000;
+
+					list.forEach(function(i) {
+						var has6 = false, m;
+
+						if (!i || i === st || !i.route)
+							return;
+						i.route.forEach(function(r) {
+							if (r && r.target === '::' && r.mask === 0)
+								has6 = true;
+						});
+						if (!has6)
+							return;
+						m = (typeof i.metric === 'number') ? i.metric : 0;
+						if (m < bestMetric) {
+							bestMetric = m;
+							best = i;
+						}
+					});
+
+					if (best) {
+						dev = best.l3_device || best.device || dev;
+						collect(best);
+					}
 				}
 
 				function hexToIp6(h) {
@@ -567,6 +612,7 @@ return view.extend({
 					setField(refs.fDns, 'DNS 伺服器', dns.length ? dns.join('、') : null);
 					setField(refs.fIp6, 'IPv6 位址', v6.length ? v6.join('、') : null);
 					setField(refs.fGw6, 'IPv6 閘道', gw6);
+					setField(refs.fPrefix6, 'IPv6 前綴', prefix6);
 				});
 			}).catch(function() { });
 		}
@@ -820,10 +866,11 @@ return view.extend({
 		refs.fDns = field('DNS 伺服器', null);
 		refs.fIp6 = field('IPv6 位址', null);
 		refs.fGw6 = field('IPv6 閘道', null);
+		refs.fPrefix6 = field('IPv6 前綴', null);
 
 		container.appendChild(E('div', { 'class': 'cpe-section' }, [
 			E('h3', '網路連線資訊'),
-			E('div', { 'class': 'cpe-fields' }, [refs.fIp, refs.fGw, refs.fDns, refs.fIp6, refs.fGw6])
+			E('div', { 'class': 'cpe-fields' }, [refs.fIp, refs.fGw, refs.fDns, refs.fIp6, refs.fGw6, refs.fPrefix6])
 		]));
 
 		refs.devBody = E('tbody');
