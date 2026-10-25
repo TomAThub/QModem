@@ -2,7 +2,13 @@
 	"luci-app-qmodem-next": {
 		"description": "Grant access to QModem Next application",
 		"read": {
+			"file": {
+				"/sys/class/hwmon": [ "list" ],
+				"/sys/class/hwmon/*": [ "list" ],
+				"/sys/class/hwmon/*/*": [ "read" ]
+			},
 			"ubus": {
+				"file": [ "list", "read" ],
 				"qmodem": [
 					"*"
 				],

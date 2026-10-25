@@ -2,6 +2,7 @@
 'require rpc';
 'require uci';
 'require poll';
+'require fs';
 'require view';
 'require qmodem.mcc-mnc as mccmnc';
 
@@ -296,6 +297,45 @@ function domContent(el, node) {
 		el.appendChild(node);
 }
 
+var thermal = { temp: null, pwm: null, probed: false };
+
+/* locate the cpu temperature and pwm fan hwmon nodes, preferring the
+   cpu_thermal and pwmfan sensor names */
+function probeThermal() {
+	if (thermal.probed)
+		return Promise.resolve(thermal);
+	thermal.probed = true;
+
+	return fs.list('/sys/class/hwmon').then(function(entries) {
+		var chain = Promise.resolve();
+		var fbTemp = null, fbPwm = null;
+
+		entries.forEach(function(ent) {
+			if (!ent || !ent.name || !/^hwmon\d+$/i.test(ent.name))
+				return;
+			chain = chain.then(function() {
+				return fs.read('/sys/class/hwmon/' + ent.name + '/name').then(function(name) {
+					name = String(name).trim();
+					if (name === 'cpu_thermal' && !thermal.temp)
+						thermal.temp = '/sys/class/hwmon/' + ent.name + '/temp1_input';
+					else if (name === 'pwmfan' && !thermal.pwm)
+						thermal.pwm = '/sys/class/hwmon/' + ent.name + '/pwm1';
+					else if (name !== 'cpu_thermal' && name !== 'pwmfan') {
+						if (!fbTemp) fbTemp = '/sys/class/hwmon/' + ent.name + '/temp1_input';
+						if (!fbPwm) fbPwm = '/sys/class/hwmon/' + ent.name + '/pwm1';
+					}
+				}).catch(function() { });
+			});
+		});
+
+		return chain.then(function() {
+			if (!thermal.temp) thermal.temp = fbTemp;
+			if (!thermal.pwm) thermal.pwm = fbPwm;
+			return thermal;
+		});
+	}).catch(function() { return thermal; });
+}
+
 return view.extend({
 	title: 'CPE 管理',
 
@@ -416,6 +456,26 @@ return view.extend({
 				setField(refs.downCard, '目前下載速率', null);
 				setField(refs.upCard, '目前上傳速率', null);
 			});
+		}
+
+		function updateThermal() {
+			probeThermal().then(function() {
+				return Promise.all([
+					thermal.temp ? fs.read(thermal.temp).catch(function() { return null; }) : Promise.resolve(null),
+					thermal.pwm ? fs.read(thermal.pwm).catch(function() { return null; }) : Promise.resolve(null)
+				]);
+			}).then(function(r) {
+				var temp = r[0] != null ? Math.round(parseInt(r[0], 10) / 1000) : null;
+				var pwm = r[1] != null ? parseInt(r[1], 10) : null;
+				if (isNaN(temp)) temp = null;
+				if (isNaN(pwm) || pwm < 0) pwm = null;
+
+				setField(refs.tempCard, 'CPU 溫度', temp != null ? temp + ' °C' : null);
+				refs.tempCard.lastChild.setAttribute('style',
+					temp == null ? '' : (temp >= 80 ? 'color:#c94040' : temp >= 70 ? 'color:#eb8c28' : 'color:#23b45a'));
+				setField(refs.fanCard, '風扇轉速',
+					pwm != null ? Math.round(pwm / 255 * 100) + ' %（PWM ' + pwm + '）' : null);
+			}).catch(function() { });
 		}
 
 		function updateModem() {
@@ -591,6 +651,8 @@ return view.extend({
 		refs.modeSub = E('div', { 'class': 'cpe-card-sub' });
 		refs.downCard = field('目前下載速率', null);
 		refs.upCard = field('目前上傳速率', null);
+		refs.tempCard = field('CPU 溫度', null);
+		refs.fanCard = field('風扇轉速', null);
 
 		container.appendChild(E('div', { 'class': 'cpe-cards' }, [
 			card('訊號強度', [
@@ -598,7 +660,8 @@ return view.extend({
 				refs.sigBadge
 			]),
 			card('網路類型', [E('div', { 'class': 'cpe-card-value' }, refs.modeValue)], refs.modeSub),
-			card('即時速率', [refs.downCard, refs.upCard])
+			card('即時速率', [refs.downCard, refs.upCard]),
+			card('裝置溫度', [refs.tempCard, refs.fanCard])
 		]));
 
 		var speed = sparkSvg();
@@ -695,8 +758,10 @@ return view.extend({
 
 		poll.add(updateSpeed, 2);
 		poll.add(updateModem, 5);
+		poll.add(updateThermal, 5);
 		updateModem();
 		updateSpeed();
+		updateThermal();
 
 		return container;
 	},
