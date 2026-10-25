@@ -110,8 +110,10 @@ return view.extend({
 	load: function() {
 		return uci.load('qmodem').then(function() {
 			var cur = null;
+			/* mirror the overview: it uses the first modem-device section
+			   regardless of at_port, so both pages resolve the same WAN */
 			uci.sections('qmodem', 'modem-device', function(s) {
-				if (!cur && s.at_port) {
+				if (!cur) {
 					var ifn = (s.alias && s.alias !== '-') ? s.alias : s['.name'];
 					cur = { id: s['.name'], ifname: ifn, name: ifn.toUpperCase() };
 				}
@@ -174,15 +176,31 @@ return view.extend({
 					lan = i;
 			});
 
-			/* the uplink is the interface holding the default route */
+			/* the uplink is the interface holding the default route,
+			   preferring IPv4 and falling back to the wan section name */
+			function hasRoute(e, target) {
+				var found = false;
+				((e && e.route) || []).forEach(function(r) {
+					if (r && r.target === target && r.mask === 0)
+						found = true;
+				});
+				return found;
+			}
+
 			if (!wan)
 				list.forEach(function(i) {
-					if (wan)
-						return;
-					(i.route || []).forEach(function(r) {
-						if (r && r.target === '0.0.0.0' && r.mask === 0)
-							wan = i;
-					});
+					if (!wan && i && hasRoute(i, '0.0.0.0'))
+						wan = i;
+				});
+			if (!wan)
+				list.forEach(function(i) {
+					if (!wan && i && hasRoute(i, '::'))
+						wan = i;
+				});
+			if (!wan)
+				list.forEach(function(i) {
+					if (!wan && i && i.interface === 'wan')
+						wan = i;
 				});
 
 			function firstAddr(e, key) {
