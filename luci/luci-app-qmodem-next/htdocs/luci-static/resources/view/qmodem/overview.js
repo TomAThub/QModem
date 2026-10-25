@@ -3,6 +3,7 @@
 'require uci';
 'require poll';
 'require fs';
+'require network';
 'require view';
 'require qmodem.mcc-mnc as mccmnc';
 
@@ -19,7 +20,8 @@ var callSimInfo = rpc.declare({ object: 'qmodem', method: 'sim_info', params: ['
 var callNetworkInfo = rpc.declare({ object: 'qmodem', method: 'network_info', params: ['config_section'], expect: {} });
 var callGetStats = rpc.declare({ object: 'qmodem', method: 'get_stats', params: ['config_section'], expect: {} });
 var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {} });
-var callRouteDump = rpc.declare({ object: 'network.route', method: 'dump', expect: { route: [] } });
+var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] } });
+var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} } });
 var callGetCopyright = rpc.declare({ object: 'qmodem', method: 'get_copyright', params: ['config_section'], expect: {} });
 var callInterfaceStatus = rpc.declare({ object: 'network.interface', method: 'status', params: ['interface'], expect: {} });
 var callRcReload = rpc.declare({ object: 'rc', method: 'init', params: ['name'], extra: { 'mode': 'reload' }, expect: {} });
@@ -298,6 +300,14 @@ function domContent(el, node) {
 		el.appendChild(node);
 }
 
+function fillTbody(tbody, rows) {
+	while (tbody.firstChild)
+		tbody.removeChild(tbody.firstChild);
+	rows.forEach(function(r) {
+		tbody.appendChild(r);
+	});
+}
+
 var thermal = { temp: null, pwm: null, probed: false };
 
 /* locate the cpu temperature and pwm fan hwmon nodes, preferring the
@@ -341,7 +351,7 @@ return view.extend({
 	title: 'CPE 管理',
 
 	load: function() {
-		return uci.load('qmodem').then(function() {
+		return Promise.all([ uci.load('qmodem'), network.load() ]).then(function() {
 			var list = [];
 			uci.sections('qmodem', 'modem-device', function(s) {
 				if (s.at_port)
@@ -483,71 +493,37 @@ return view.extend({
 			if (!cur)
 				return;
 
-			var names = [];
-			if (cur.ifname)
-				names.push(cur.ifname);
-			if (cur.id && cur.id !== cur.ifname)
-				names.push(cur.id);
+			/* like luci-mod-dashboard: read the interface state from the
+			   netifd dump; the default route lives in the dump route array
+			   with a nexthop field, kernel IPv6 addresses are read from
+			   /proc/net/if_inet6 as a fallback */
+			callInterfaceDump().then(function(d) {
+				var list = (d && d.interface) || [], st = null;
+				list.forEach(function(i) {
+					if (!st && (i.interface === cur.ifname || i.interface === cur.id))
+						st = i;
+				});
+				return st;
+			}).then(function(st) {
+				var ip = null, gw = null, gw6 = null, dns = [], ip6 = [], dev = null;
 
-			function tryNext(i) {
-				if (i >= names.length)
-					return Promise.resolve(null);
-				return callInterfaceStatus(names[i]).then(function(st) {
-					if (st && (st['ipv4-address'] || st.route || st['dns-server']))
-						return st;
-					return tryNext(i + 1);
-				}).catch(function() { return tryNext(i + 1); });
-			}
-
-			/* the default route is implicit in netifd and kernel-managed
-			   IPv6 addresses are not part of the interface state, so pick
-			   the gateway from the route dump and IPv6 from the kernel */
-			function findGateway(dev) {
-				return callRouteDump().then(function(rt) {
-					var list = (rt && rt.route) || [], gw = null;
-					list.forEach(function(r) {
-						if (!r || gw || !r.gateway)
-							return;
-						if (r.target !== '0.0.0.0' && r.target !== 'default')
-							return;
-						if (r.interface === cur.ifname || r.interface === cur.id ||
-						    (dev && r.interface === dev))
-							gw = r.gateway;
-					});
-					return gw;
-				}).catch(function() { return null; });
-			}
-
-			function hexToIp6(h) {
-				var g = [];
-				for (var i = 0; i < 8; i++)
-					g.push(parseInt(h.substr(i * 4, 4), 16).toString(16));
-				return g.join(':');
-			}
-
-			function findIpv6(dev) {
-				if (!dev)
-					return Promise.resolve([]);
-				return fs.read('/proc/net/if_inet6').then(function(data) {
-					var out = [];
-					String(data).trim().split('\n').forEach(function(l) {
-						var p = l.trim().split(/\s+/);
-						/* <hex addr> <plen> <scope> <flags> <ifname> */
-						if (p.length < 5 || p[4] !== dev || parseInt(p[2], 16) !== 0)
-							return;
-						out.push(hexToIp6(p[0]) + '/' + parseInt(p[1], 10));
-					});
-					return out;
-				}).catch(function() { return []; });
-			}
-
-			tryNext(0).then(function(st) {
-				var ip = null, dns = [], ip6 = [], dev = null;
+				function routeNexthop(r) {
+					return r.nexthop || r.gateway || null;
+				}
 
 				if (st) {
 					dev = st.l3_device || st.device || null;
 					if (st['ipv4-address'] && st['ipv4-address'].length)
 						ip = st['ipv4-address'][0].address + '/' + st['ipv4-address'][0].mask;
+					if (st.route)
+						st.route.forEach(function(r) {
+							if (!r)
+								return;
+							if (gw == null && r.target === '0.0.0.0' && r.mask === 0)
+								gw = routeNexthop(r);
+							if (gw6 == null && r.target === '::' && r.mask === 0)
+								gw6 = routeNexthop(r);
+						});
 					if (st['dns-server'])
 						st['dns-server'].forEach(function(d) {
 							var a = (typeof d === 'string') ? d : (d && d.address);
@@ -561,23 +537,87 @@ return view.extend({
 						});
 				}
 
-				var gw = null;
-				if (st && st.route)
-					st.route.forEach(function(r) {
-						if (gw == null && r && (r.target === '0.0.0.0' || r.target === 'default') &&
-						    r.mask === 0 && r.gateway)
-							gw = r.gateway;
-					});
+				function hexToIp6(h) {
+					var g = [];
+					for (var i = 0; i < 8; i++)
+						g.push(parseInt(h.substr(i * 4, 4), 16).toString(16));
+					return g.join(':');
+				}
 
-				return Promise.all([
-					gw != null ? Promise.resolve(gw) : findGateway(dev),
-					ip6.length ? Promise.resolve(ip6) : findIpv6(dev)
-				]).then(function(r) {
+				function findIpv6() {
+					if (!dev || ip6.length)
+						return Promise.resolve(ip6);
+					return fs.read('/proc/net/if_inet6').then(function(data) {
+						var out = [];
+						String(data).trim().split('\n').forEach(function(l) {
+							var p = l.trim().split(/\s+/);
+							/* <hex addr> <plen> <scope> <flags> <ifname> */
+							if (p.length < 5 || p[4] !== dev || parseInt(p[2], 16) !== 0)
+								return;
+							out.push(hexToIp6(p[0]) + '/' + parseInt(p[1], 10));
+						});
+						return out;
+					}).catch(function() { return []; });
+				}
+
+				findIpv6().then(function(v6) {
 					setField(refs.fIp, 'IP 位址', ip);
-					setField(refs.fGw, '預設閘道', r[0]);
+					setField(refs.fGw, '預設閘道', gw);
 					setField(refs.fDns, 'DNS 伺服器', dns.length ? dns.join('、') : null);
-					setField(refs.fIp6, 'IPv6 位址', r[1].length ? r[1].join('、') : null);
+					setField(refs.fIp6, 'IPv6 位址', v6.length ? v6.join('、') : null);
+					setField(refs.fGw6, 'IPv6 閘道', gw6);
 				});
+			}).catch(function() { });
+		}
+
+		function updateDevices() {
+			L.resolveDefault(callLuciDHCPLeases(), {}).then(function(res) {
+				var rows = [], n = 0;
+				for (var mac in res) {
+					if (!res.hasOwnProperty(mac) || !res[mac])
+						continue;
+					var d = res[mac];
+					if (!d.ipv4 && !d.hostname)
+						continue;
+					rows.push(E('tr', { 'class': 'tr cbi-rowstyle-' + (n % 2 ? 2 : 1) }, [
+						E('td', { 'class': 'td' }, d.hostname || '(未命名)'),
+						E('td', { 'class': 'td' }, d.ipv4 || '--'),
+						E('td', { 'class': 'td' }, d.macaddr || mac)
+					]));
+					n++;
+				}
+				if (!rows.length)
+					rows.push(E('tr', { 'class': 'tr' }, [
+						E('td', { 'class': 'td', 'colspan': '3', 'style': 'text-align:center;color:#888' }, '無連線裝置')
+					]));
+				fillTbody(refs.devBody, rows);
+				refs.devCount.textContent = '共 ' + n + ' 台裝置';
+			}).catch(function() { });
+		}
+
+		function updateWifi() {
+			L.resolveDefault(network.getWifiNetworks(), []).then(function(nets) {
+				var rows = [], n = 0;
+				nets.sort(function(a, b) { return L.naturalCompare(a.getWifiDeviceName(), b.getWifiDeviceName()); });
+				nets.forEach(function(net) {
+					var chan = net.getChannel(), freq = net.getFrequency();
+					rows.push(E('tr', { 'class': 'tr cbi-rowstyle-' + (n % 2 ? 2 : 1) }, [
+						E('td', { 'class': 'td' }, net.getWifiDeviceName() || '--'),
+						E('td', { 'class': 'td' }, net.getActiveSSID() || '?'),
+						E('td', { 'class': 'td' }, [
+							E('span', { 'style': 'color:' + (net.isDisabled() ? '#c94040' : '#23b45a') },
+								net.isDisabled() ? '關閉' : '啟用')
+						]),
+						E('td', { 'class': 'td' }, chan ? chan + ' (' + (freq ? (freq / 1000).toFixed(3) : '?') + ' GHz)' : '--'),
+						E('td', { 'class': 'td' }, net.getBSSID() || '--')
+					]));
+					n++;
+				});
+				if (!rows.length)
+					rows.push(E('tr', { 'class': 'tr' }, [
+						E('td', { 'class': 'td', 'colspan': '5', 'style': 'text-align:center;color:#888' }, '無無線網路')
+					]));
+				fillTbody(refs.wifiBody, rows);
 			}).catch(function() { });
 		}
 
@@ -771,10 +811,45 @@ return view.extend({
 		refs.fGw = field('預設閘道', null);
 		refs.fDns = field('DNS 伺服器', null);
 		refs.fIp6 = field('IPv6 位址', null);
+		refs.fGw6 = field('IPv6 閘道', null);
 
 		container.appendChild(E('div', { 'class': 'cpe-section' }, [
 			E('h3', '網路連線資訊'),
-			E('div', { 'class': 'cpe-fields' }, [refs.fIp, refs.fGw, refs.fDns, refs.fIp6])
+			E('div', { 'class': 'cpe-fields' }, [refs.fIp, refs.fGw, refs.fDns, refs.fIp6, refs.fGw6])
+		]));
+
+		refs.devBody = E('tbody');
+		refs.devCount = E('span', { 'class': 'cpe-card-sub', 'style': 'margin-top:8px' });
+		container.appendChild(E('div', { 'class': 'cpe-section' }, [
+			E('h3', '已連線裝置'),
+			E('table', { 'class': 'table' }, [
+				E('thead', [
+					E('tr', { 'class': 'tr' }, [
+						E('th', { 'class': 'th' }, '主機名稱'),
+						E('th', { 'class': 'th' }, 'IP 位址'),
+						E('th', { 'class': 'th' }, 'MAC')
+					])
+				]),
+				refs.devBody
+			]),
+			refs.devCount
+		]));
+
+		refs.wifiBody = E('tbody');
+		container.appendChild(E('div', { 'class': 'cpe-section' }, [
+			E('h3', 'WIFI 資訊'),
+			E('table', { 'class': 'table' }, [
+				E('thead', [
+					E('tr', { 'class': 'tr' }, [
+						E('th', { 'class': 'th' }, '無線電'),
+						E('th', { 'class': 'th' }, 'SSID'),
+						E('th', { 'class': 'th' }, '狀態'),
+						E('th', { 'class': 'th' }, '頻道'),
+						E('th', { 'class': 'th' }, 'BSSID')
+					])
+				]),
+				refs.wifiBody
+			])
 		]));
 
 		var speed = sparkSvg();
@@ -874,10 +949,14 @@ return view.extend({
 		poll.add(updateModem, 5);
 		poll.add(updateThermal, 5);
 		poll.add(updateNet, 5);
+		poll.add(updateDevices, 10);
+		poll.add(updateWifi, 15);
 		updateModem();
 		updateSpeed();
 		updateThermal();
 		updateNet();
+		updateDevices();
+		updateWifi();
 
 		return container;
 	},

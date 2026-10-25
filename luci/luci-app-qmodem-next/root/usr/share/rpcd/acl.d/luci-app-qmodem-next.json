@@ -10,7 +10,9 @@
 			},
 			"ubus": {
 				"file": [ "list", "read" ],
-				"network.route": [ "dump" ],
+				"luci-rpc": [ "getDHCPLeases" ],
+				"network.wireless": [ "status" ],
+				"network.device": [ "status" ],
 				"network.interface": [ "status", "dump" ],
 				"qmodem": [
 					"*"
@@ -21,7 +23,7 @@
 				"rc" : [ "list" ,"init"],
 				"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
 			},
-			"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard" ]
+			"uci": [ "qmodem", "sms_forwarder", "cpe-dashboard", "wireless", "network", "ddns" ]
 		},
 		"write": {
 			"ubus": {
