@@ -106,7 +106,7 @@ function topoLayout(root, mbps) {
 
 		edges.push({
 			sp: [p.x, p.y], tp: [c.x, c.y], curv: cv,
-			mbps: c.node.id === 'internet' ? mbps : 0,
+			mbps: c.node.id === 'internet' ? mbps : (Number(c.node.mbps) || 0),
 			online: (p.node.status || 'online') !== 'offline' && (c.node.status || 'online') !== 'offline'
 		});
 	});
@@ -158,18 +158,12 @@ return view.extend({
 		}
 
 		function updateTopo() {
-			var dumpErr = null, leaseErr = null, hintErr = null;
-
-			function errStr(e) {
-				return String(e && e.message ? e.message : e);
-			}
-
 			Promise.all([
 				topoName(),
-				callInterfaceDump().catch(function(e) { dumpErr = errStr(e); return []; }),
-				L.resolveDefault(callLuciDHCPLeases().catch(function(e) { leaseErr = errStr(e); }), {}),
+				callInterfaceDump().catch(function() { return []; }),
+				L.resolveDefault(callLuciDHCPLeases().catch(function() { return {}; }), {}),
 				L.resolveDefault(network.getWifiNetworks(), []).catch(function() { return []; }),
-				L.resolveDefault(callHostHints().catch(function(e) { hintErr = errStr(e); }), {}),
+				L.resolveDefault(callHostHints().catch(function() { return {}; }), {}),
 				L.resolveDefault(callDialStatus(cur.id), {}),
 				readFile('/proc/net/arp'),
 				readFile('/proc/net/route'),
@@ -181,12 +175,12 @@ return view.extend({
 						return { band: f >= 5 ? '5g' : '24g', list: l };
 					}).catch(function() { return { band: '24g', list: [] }; });
 				})).then(function(assocs) {
-					renderTopo(r[1], r[2], assocs, r[4], r[5], r[6], dumpErr, leaseErr, r[7], r[8], hintErr);
+					renderTopo(r[1], r[2], assocs, r[4], r[5], r[6], r[7], r[8]);
 				});
 			}).catch(function() { });
 		}
 
-		function renderTopo(d, leaseRes, assocs, hints, dial, arpRaw, dumpErr, leaseErr, routeRaw, devStat, hintErr) {
+		function renderTopo(d, leaseRes, assocs, hints, dial, arpRaw, routeRaw, devStat) {
 			var list = Array.isArray(d) ? d : ((d && d.interface) || []),
 				wan = null, lan = null;
 
@@ -269,7 +263,8 @@ return view.extend({
 					if (!b || !b.mac || stMac[b.mac.toLowerCase()])
 						return;
 					stMac[b.mac.toLowerCase()] = true;
-					stations.push({ mac: b.mac, band: a.band });
+					stations.push({ mac: b.mac, band: a.band,
+						mbps: (((b.tx && b.tx.rate) || 0) + ((b.rx && b.rx.rate) || 0)) / 1000 });
 				});
 			});
 
@@ -321,7 +316,13 @@ return view.extend({
 
 			function devNode(p, n, x, conn) {
 				return { id: p + n, name: devName(x), type: 'cpe', conn: conn,
-					status: 'online', ip: x.ip, mac: x.mac };
+					status: 'online', ip: x.ip, mac: x.mac, mbps: Number(x.mbps) || 0 };
+			}
+
+			function grpSum(ch) {
+				var t = 0;
+				ch.forEach(function(c) { t += c.mbps || 0; });
+				return t;
 			}
 
 			/* the modem daemon's dial state is the authoritative uplink signal;
@@ -330,46 +331,31 @@ return view.extend({
 				wanUp = truthy(dial && dial.running) ||
 					!!(wan && (wan.up === true || (wan['ipv4-address'] || []).length));
 
-			var dshape = (d == null) ? 'null' : (Array.isArray(d) ? '陣列' + d.length :
-					(typeof d === 'object' ? (Object.keys(d).join('+') || '空物件') : String(d))),
-				lshape = (leaseRes && typeof leaseRes === 'object') ? (Object.keys(leaseRes).join('+') || '空物件') : String(leaseRes),
-				fshape = fbDev ? ((devStat && devStat[fbDev]) ?
-					(devStat[fbDev]['ipv4-address'] ? 'dev有IP' : 'dev無IP') : 'dev缺') : '-';
-
-			refs.topoDbg.textContent = 'r49 · WAN: ' + (wan ? wan.interface : '(未找到)') +
-				' · up=' + (wan ? String(wan.up) : '-') +
-				' · IPv4: ' + (wanIp || '-') +
-				' · 撥號: ' + (truthy(dial && dial.running) ? '已撥號' : '未撥號') +
-				' · dump 介面數: ' + list.length +
-				' · dump 回應: ' + dshape +
-				' · 租約鍵: ' + lshape +
-				' · devStat: ' + fshape +
-				' · 租約: ' + Object.keys(leaseByMac).length +
-				' · ARP: ' + Object.keys(seenMac).length +
-				(dumpErr ? ' · dump 錯誤: ' + dumpErr : '') +
-				(leaseErr ? ' · 租約錯誤: ' + leaseErr : '') +
-				(hintErr ? ' · hints 錯誤: ' + hintErr : '') +
-				(fbDev ? ' · 回退: 路由表 ' + fbDev : '');
-
 			var kids = [{ id: 'internet', name: 'Internet', type: 'internet',
 					status: wanUp ? 'online' : 'offline',
 					ip: wanIp }];
 
-			if (wired.length)
+			if (wired.length) {
+				var chW = wired.map(function(x, n) { return devNode('w', n, x, '有線'); });
 				kids.push({ id: 'wired', name: '有線設備 (' + wired.length + ')', type: 'wired',
-					status: 'online', children: wired.map(function(x, n) { return devNode('w', n, x, '有線'); }) });
-			if (groups['24g'].length)
+					status: 'online', mbps: grpSum(chW), children: chW });
+			}
+			if (groups['24g'].length) {
+				var ch2 = groups['24g'].map(function(x, n) { return devNode('a2', n, x, 'WiFi 2.4G'); });
 				kids.push({ id: 'wifi24', name: 'WiFi 2.4G (' + groups['24g'].length + ')', type: 'wireless',
-					status: 'online', children: groups['24g'].map(function(x, n) { return devNode('a2', n, x, 'WiFi 2.4G'); }) });
-			if (groups['5g'].length)
+					status: 'online', mbps: grpSum(ch2), children: ch2 });
+			}
+			if (groups['5g'].length) {
+				var ch5 = groups['5g'].map(function(x, n) { return devNode('a5', n, x, 'WiFi 5G'); });
 				kids.push({ id: 'wifi5', name: 'WiFi 5G (' + groups['5g'].length + ')', type: 'wireless',
-					status: 'online', children: groups['5g'].map(function(x, n) { return devNode('a5', n, x, 'WiFi 5G'); }) });
+					status: 'online', mbps: grpSum(ch5), children: ch5 });
+			}
 
 			var root = { id: 'router', name: topoHost || '路由器', type: 'router',
 					status: 'online', ip: firstAddr(lan, 'ipv4-address'), children: kids },
 				/* netifd maintains rx_rate/tx_rate (bytes per second) per interface */
 				rate = (wan && wan.statistics) ? ((Number(wan.statistics.rx_rate) || 0) + (Number(wan.statistics.tx_rate) || 0)) : 0,
-				lay = topoLayout(root, rate / 1e6),
+				lay = topoLayout(root, rate * 8 / 1e6),
 				W = 1000, H = Math.max(420, 45 * (lay.maxN - 1) + 60), svg = [];
 
 			function px(p) { return [p[0] / 100 * W, p[1] / 100 * H]; }
@@ -441,7 +427,6 @@ return view.extend({
 
 		refs.topoSvg = E('div', { 'style': 'width:100%' });
 		refs.topoTip = E('div', { 'style': 'position:absolute;z-index:30;display:none;pointer-events:none;white-space:nowrap;background:rgba(15,23,42,0.9);border:1px solid #334155;border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;color:#f1f5f9' });
-		refs.topoDbg = E('div', { 'style': 'margin-top:6px;font-size:12px;color:#999' });
 		refs.topoBox = E('div', { 'style': 'position:relative;width:100%' }, [refs.topoSvg, refs.topoTip]);
 
 		poll.add(updateTopo, 10);
@@ -450,8 +435,7 @@ return view.extend({
 		return E('div', { 'class': 'cpe-wrap' }, [
 			E('div', { 'class': 'cpe-section' }, [
 				E('h3', '網路拓撲'),
-				refs.topoBox,
-				refs.topoDbg
+				refs.topoBox
 			])
 		]);
 	},
