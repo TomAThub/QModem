@@ -12,11 +12,18 @@ document.head.appendChild(E('link', {
 	'href': L.resource('qmodem/cpe-dashboard.css')
 }));
 
-var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', reject: true });
-var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status', expect: { '': {} }, reject: true });
-var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} }, reject: true });
-var callHostHints = rpc.declare({ object: 'luci-rpc', method: 'getHostHints', expect: { '': {} }, reject: true });
-var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {}, reject: true });
+var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', reject: true, nobatch: true });
+var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status', expect: { '': {} }, reject: true, nobatch: true });
+var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} }, reject: true, nobatch: true });
+var callHostHints = rpc.declare({ object: 'luci-rpc', method: 'getHostHints', expect: { '': {} }, reject: true, nobatch: true });
+var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {}, reject: true, nobatch: true });
+var callFileRead = rpc.declare({ object: 'file', method: 'read', params: ['path'], expect: {}, reject: true, nobatch: true });
+
+function readFile(path) {
+	return callFileRead(path).then(function(res) {
+		return (res && typeof res.data === 'string') ? res.data : '';
+	}).catch(function() { return ''; });
+}
 
 function truthy(v) {
 	return v === true || v === 1 || v === '1' || v === 'true';
@@ -144,11 +151,8 @@ return view.extend({
 		function topoName() {
 			if (topoHost != null)
 				return Promise.resolve(topoHost);
-			return fs.read('/proc/sys/kernel/hostname').then(function(h) {
+			return readFile('/proc/sys/kernel/hostname').then(function(h) {
 				topoHost = String(h).trim() || '路由器';
-				return topoHost;
-			}).catch(function() {
-				topoHost = '路由器';
 				return topoHost;
 			});
 		}
@@ -167,8 +171,8 @@ return view.extend({
 				L.resolveDefault(network.getWifiNetworks(), []).catch(function() { return []; }),
 				L.resolveDefault(callHostHints().catch(function(e) { hintErr = errStr(e); }), {}),
 				L.resolveDefault(callDialStatus(cur.id), {}),
-				fs.read('/proc/net/arp').then(function(b) { return String(b); }).catch(function() { return ''; }),
-				fs.read('/proc/net/route').then(function(b) { return String(b); }).catch(function() { return ''; }),
+				readFile('/proc/net/arp'),
+				readFile('/proc/net/route'),
 				L.resolveDefault(callDeviceStatus().catch(function() { return {}; }), {})
 			]).then(function(r) {
 				return Promise.all(r[3].map(function(net) {
