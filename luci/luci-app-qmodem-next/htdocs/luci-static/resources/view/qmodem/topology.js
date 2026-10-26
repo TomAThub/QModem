@@ -370,7 +370,17 @@ return view.extend({
 				W = (refs.topoSvg && refs.topoSvg.clientWidth) || 1000,
 				H = Math.max(420, 45 * (lay.maxN - 1) + 60), svg = [];
 
-			function px(p) { return [p[0] / 100 * W, p[1] / 100 * H]; }
+			/* reserve room for the widest label so the right column is not
+			   clipped on narrow screens */
+			var maxLW = 0;
+			lay.nodes.forEach(function(nd) {
+				var lw = textWidth(String(nd.node.name || '').replace(/[{}|]/g, ' ').trim(), 12) + 46;
+				if (lw > maxLW)
+					maxLW = lw;
+			});
+			var usableW = Math.max(W * 0.55, W - maxLW - 24);
+
+			function px(p) { return [p[0] / 100 * usableW, p[1] / 100 * H]; }
 			function n2(v) { return Math.round(v * 10) / 10; }
 
 			lay.edges.forEach(function(e) {
