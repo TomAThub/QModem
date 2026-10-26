@@ -2,11 +2,9 @@ Hiveton H5000M（OpenWrt 25.12 / aarch64_cortex-a53）ipk 安裝套件
 ==================================================================
 
 【主要套件（最終版）】
-  luci-app-qmodem-next_3.4.0_rc3-r29   CPE 管理介面（儀表板/AT 指令/APN 設定檔/簡訊/繁體中文）
+  luci-app-qmodem-next_3.4.0_rc3-r53   CPE 管理介面（儀表板/網路拓撲/AT 指令/APN 設定檔/簡訊/繁體中文）
   luci-i18n-qmodem-next-zh-tw          CPE 介面繁體中文翻譯
   luci-i18n-qmodem-next-zh-cn          CPE 介面簡體中文翻譯
-  luci-app-fan-ctrl_1.0.0-r4           風扇溫控套件（服務 → 風扇溫控）
-  luci-i18n-fan-ctrl-zh-tw             風扇溫控繁體中文翻譯
 
 【qmodem 核心與附屬套件】
   qmodem、libqmodem-sms、qmodem-smsd、modem_scan、ubus-at-daemon、
@@ -29,6 +27,7 @@ Hiveton H5000M（OpenWrt 25.12 / aarch64_cortex-a53）ipk 安裝套件
   3. 安裝後瀏覽器以 Ctrl+F5 重新整理 LuCI 頁面。
 
 【備註】
-  - 安裝 luci-app-fan-ctrl 時會自動停用舊版 fan_service 與 rc.local 中的
-    fan_ctrl.sh 啟動，並重啟 rpcd、清除 LuCI 快取。
+  - 本目錄僅保留最新且運作正常的版本；舊版與出問題的版本已移除。
   - 已裝過舊版 ipk 的機器直接覆蓋安裝即可，設定值保留。
+  - 風扇溫控（luci-app-fan-ctrl）與獨立網路拓撲（luci-app-net-topology）
+    不在本目錄與本 repo 範圍內。
