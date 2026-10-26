@@ -17,13 +17,13 @@
 >   - 自適應版面：圖高隨裝置數、圖寬隨容器寬度調整，直式／橫式皆不變形、不裁切；懸停節點顯示名稱／類型／IP／MAC／狀態；每 10 秒自動更新
 > - **繁體中文介面**：新增 `po/zh_Hant` 翻譯（建置 `luci-i18n-qmodem-next-zh-tw` 套件）
 >
-> ### ipks/ 目錄（預先編譯的安裝檔）
-> 針對 Hiveton H5000M（OpenWrt 25.12，`aarch64_cortex-a53`）建置，上傳路由器後以 `opkg install *.ipk` 一次安裝（相依順序由 opkg 處理，完整說明見目錄內 `INSTALL.txt`）。
-> - **主要套件**：`luci-app-qmodem-next`（CPE 管理介面，含上述所有修改）與 `luci-i18n-qmodem-next-zh-tw`／`zh-cn` 翻譯
-> - **qmodem 核心與附屬**：`qmodem`、`libqmodem-sms`、`qmodem-smsd`、`modem_scan`、`ubus-at-daemon`、`qmodem-settings`、`qmodem-seal`、`sms-forwarder-next`、`sms-tool_q`、`tom_modem`、`quectel-CM-5G-M`、`ndisc6`
-> - **系統相依**：`bc`、`curl`／`libcurl4`、`jq`、`libsqlite3-0`、`ucode` 系列、`coreutils` 系列、`flock`、`xxd`、`usbutils`／`usbids`／`pciids`、`ca-bundle`、`libmbedtls21`、`libsodium`、`libnghttp2-14`、`libncurses6`／`terminfo`、`zlib`
+> ### 預先編譯的安裝檔（`ipks/` 與 `ipks-24.10/`）
+> 兩組目錄內容結構相同：**主要套件**（`luci-app-qmodem-next`，含上述所有修改）＋ `luci-i18n-qmodem-next-zh-tw`／`zh-cn` 翻譯、**qmodem 核心與附屬**（`qmodem`、`libqmodem-sms`、`qmodem-smsd`、`modem_scan`、`ubus-at-daemon`、`qmodem-settings`、`qmodem-seal`、`sms-forwarder-next`、`sms-tool_q`、`tom_modem`、`quectel-CM-5G-M`、`ndisc6`）、**系統相依**（`bc`、`curl`／`libcurl4`、`jq`、`libsqlite3-0`、`ucode` 系列、`coreutils` 系列、`flock`、`xxd`、`usbutils`／`usbids`／`pciids`、`ca-bundle`、`libmbedtls21`、`libsodium`、`libnghttp2-14`、`libncurses6`／`terminfo`、`zlib`）。上傳路由器後以 `opkg install *.ipk` 一次安裝（相依順序由 opkg 處理，完整說明見各目錄內 `INSTALL.txt`）。
+> - **`ipks/`**：OpenWrt **25.12**（`aarch64_cortex-a53`）建置，供 Hiveton H5000M 自編韌體使用
+> - **`ipks-24.10/`**：以官方 **24.10.0 SDK** 編譯（相同的 `luci-app-qmodem-next r53` 原始碼），連結 24.10 官方套件庫的 `libubus20250102`／`libubox20240329` ABI，適用於同架構（`aarch64_cortex-a53`）的 24.10.x 官方韌體
 > - **版本政策**：僅保留最新且運作正常的版本；舊版與出問題的版本直接從目錄移除（版本編號見檔名中的 `PKG_RELEASE`）
-> - 風扇溫控（`luci-app-fan-ctrl`）與獨立版網路拓撲（`luci-app-net-topology`）不屬於本 repo 範圍，未收錄於此目錄
+> - **相容性說明**：預編 ipk 綁定韌體的 `libubus`／`libubox` soname，**25.12 與 24.10 兩組不相通用**；其他 OpenWrt 版本請以對應版本的 SDK 自行編譯本 feed
+> - 風扇溫控（`luci-app-fan-ctrl`）與獨立版網路拓撲（`luci-app-net-topology`）不屬於本 repo 範圍，未收錄於上述目錄
 >
 > ---
 
