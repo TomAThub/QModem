@@ -14,16 +14,16 @@ document.head.appendChild(E('link', {
 }));
 
 /* qmodem 3.0.x ubus API (rpcd), all methods take config_section */
-var callBaseInfo = rpc.declare({ object: 'qmodem', method: 'base_info', params: ['config_section'], expect: {} });
-var callCellInfo = rpc.declare({ object: 'qmodem', method: 'cell_info', params: ['config_section'], expect: {} });
-var callSimInfo = rpc.declare({ object: 'qmodem', method: 'sim_info', params: ['config_section'], expect: {} });
-var callNetworkInfo = rpc.declare({ object: 'qmodem', method: 'network_info', params: ['config_section'], expect: {} });
-var callGetStats = rpc.declare({ object: 'qmodem', method: 'get_stats', params: ['config_section'], expect: {} });
-var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {} });
-var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] } });
-var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} } });
-var callGetCopyright = rpc.declare({ object: 'qmodem', method: 'get_copyright', params: ['config_section'], expect: {} });
-var callInterfaceStatus = rpc.declare({ object: 'network.interface', method: 'status', params: ['interface'], expect: {} });
+var callBaseInfo = rpc.declare({ object: 'qmodem', method: 'base_info', params: ['config_section'], expect: {}, nobatch: true });
+var callCellInfo = rpc.declare({ object: 'qmodem', method: 'cell_info', params: ['config_section'], expect: {}, nobatch: true });
+var callSimInfo = rpc.declare({ object: 'qmodem', method: 'sim_info', params: ['config_section'], expect: {}, nobatch: true });
+var callNetworkInfo = rpc.declare({ object: 'qmodem', method: 'network_info', params: ['config_section'], expect: {}, nobatch: true });
+var callGetStats = rpc.declare({ object: 'qmodem', method: 'get_stats', params: ['config_section'], expect: {}, nobatch: true });
+var callDialStatus = rpc.declare({ object: 'qmodem', method: 'dial_status', params: ['config_section'], expect: {}, nobatch: true });
+var callInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] }, nobatch: true });
+var callLuciDHCPLeases = rpc.declare({ object: 'luci-rpc', method: 'getDHCPLeases', expect: { '': {} }, nobatch: true });
+var callGetCopyright = rpc.declare({ object: 'qmodem', method: 'get_copyright', params: ['config_section'], expect: {}, nobatch: true });
+var callInterfaceStatus = rpc.declare({ object: 'network.interface', method: 'status', params: ['interface'], expect: {}, nobatch: true });
 var callRcReload = rpc.declare({ object: 'rc', method: 'init', params: ['name'], extra: { 'mode': 'reload' }, expect: {} });
 
 /* uci.commit()/reload() were removed in newer LuCI; keep compat */

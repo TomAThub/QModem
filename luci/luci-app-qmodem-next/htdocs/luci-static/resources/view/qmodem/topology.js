@@ -81,13 +81,20 @@ function topoLayout(root, mbps) {
 
 	var pos = {}, nodes = [], maxN = 0;
 	Object.keys(byDepth).forEach(function(d) {
+		if (byDepth[d].length > maxN)
+			maxN = byDepth[d].length;
+	});
+	/* the chart height grows with the widest level, so pin the vertical
+	   margins at ~50px instead of the vendor's 12%, which would balloon
+	   into hundreds of pixels of blank space on tall charts */
+	var mg = Math.min(12, 5000 / Math.max(420, 45 * (maxN - 1) + 60)),
+		band = 100 - 2 * mg;
+	Object.keys(byDepth).forEach(function(d) {
 		var q = byDepth[d], n = q.length, dr = maxDepth === 0 ? 0 : d / maxDepth;
-		if (n > maxN)
-			maxN = n;
 		q.forEach(function(f, ge) {
 			var ie = n <= 1 ? 0.5 : ge / (n - 1);
 			pos[f.key] = { node: f.node, order: f.order, depth: +d,
-				x: 10 + dr * 74, y: 12 + ie * 76, levelIndex: ge, levelCount: n };
+				x: 10 + dr * 74, y: mg + ie * band, levelIndex: ge, levelCount: n };
 			nodes.push(pos[f.key]);
 		});
 	});
