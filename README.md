@@ -8,6 +8,13 @@
 > - **AT 快速指令與 APN 設定檔**：自訂 AT 指令及 APN 設定檔以 uci 儲存、列表顯示目前 APN、漫遊開關（`QNWPREFCFG`）
 > - **簡訊修正**：DB 模式下「卡簡訊」刪除不再出現 `Invalid message index`（index 自動以資料庫 id 補上）；SMS 頁面路徑配合移至 `admin/cpe`
 > - **其他**：安裝後自動重啟 rpcd 使 ACL 立即生效、選單與權限（ACL）調整
+> - **網路拓撲圖**：CPE 管理新增「網路拓撲」分頁（`admin/cpe/topology`），以純 SVG 重現 Hiveton HigoOS 原生網路拓撲視圖（無外部 JS 圖庫）
+>   - 分層佈局：Internet → 路由器 → 有線設備／WiFi 2.4G／WiFi 5G → 各裝置，含上下行流量粒子動畫
+>   - 連線粗細反映各連結實際速率：WiFi 客戶端取交談速率（assoclist tx/rx rate）、Internet 連線取 WAN 即時流量
+>   - 裝置偵測：DHCP 租約與 ARP 表合併（靜態 IP、未走 DHCP 的裝置同樣顯示），WiFi 客戶端取自各 radio assoclist
+>   - 裝置名稱解析鏈：DHCP hostname → 靜態租約名稱（`dhcp` host 段）→ LuCI 主機提示 → IP/MAC
+>   - Internet 在線狀態以 qmodem 撥號狀態為準（netifd 介面狀態備援）
+>   - 自適應版面：圖高隨裝置數、圖寬隨容器寬度調整，直式／橫式皆不變形、不裁切；懸停節點顯示名稱／類型／IP／MAC／狀態；每 10 秒自動更新
 > - **繁體中文介面**：新增 `po/zh_Hant` 翻譯（建置 `luci-i18n-qmodem-next-zh-tw` 套件）
 >
 > ---
