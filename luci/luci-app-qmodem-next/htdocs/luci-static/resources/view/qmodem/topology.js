@@ -363,7 +363,12 @@ return view.extend({
 				/* netifd maintains rx_rate/tx_rate (bytes per second) per interface */
 				rate = (wan && wan.statistics) ? ((Number(wan.statistics.rx_rate) || 0) + (Number(wan.statistics.tx_rate) || 0)) : 0,
 				lay = topoLayout(root, rate * 8 / 1e6),
-				W = 1000, H = Math.max(420, 45 * (lay.maxN - 1) + 60), svg = [];
+				/* match the viewBox to the container width so the svg maps
+				   1:1 to pixels; a fixed 1000 wide viewBox would be scaled
+				   down on narrow screens and preserveAspectRatio would pad
+				   the leftover height back in as top and bottom margins */
+				W = (refs.topoSvg && refs.topoSvg.clientWidth) || 1000,
+				H = Math.max(420, 45 * (lay.maxN - 1) + 60), svg = [];
 
 			function px(p) { return [p[0] / 100 * W, p[1] / 100 * H]; }
 			function n2(v) { return Math.round(v * 10) / 10; }
@@ -437,7 +442,10 @@ return view.extend({
 		refs.topoBox = E('div', { 'style': 'position:relative;width:100%' }, [refs.topoSvg, refs.topoTip]);
 
 		poll.add(updateTopo, 10);
-		updateTopo();
+		/* poll.add fires once right away, before this view is in the DOM,
+		   so draw again on the next task when the container width can be
+		   measured */
+		window.setTimeout(updateTopo, 0);
 
 		return E('div', { 'class': 'cpe-wrap' }, [
 			E('div', { 'class': 'cpe-section' }, [
