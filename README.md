@@ -12,6 +12,7 @@
 >   - 分層佈局：Internet → 路由器 → 有線設備／WiFi 2.4G／WiFi 5G → 各裝置，含上下行流量粒子動畫
 >   - 連線粗細反映各連結實際速率：WiFi 客戶端取交談速率（assoclist tx/rx rate）、Internet 連線取 WAN 即時流量
 >   - 裝置偵測：DHCP 租約與 ARP 表合併（靜態 IP、未走 DHCP 的裝置同樣顯示），WiFi 客戶端取自各 radio assoclist
+>   - 有線裝置在線偵測：平行 ping 探測＋核心鄰居確認狀態（`ip neigh`）混合判斷，ARP 殘留紀錄中的離線裝置自動隱藏（探測元件缺失時自動退回顯示全部）；WiFi 端以即時 assoclist 為準
 >   - 裝置名稱解析鏈：DHCP hostname → 靜態租約名稱（`dhcp` host 段）→ LuCI 主機提示 → IP/MAC
 >   - Internet 在線狀態以 qmodem 撥號狀態為準（netifd 介面狀態備援）
 >   - 自適應版面：圖高隨裝置數、圖寬隨容器寬度調整，直式／橫式皆不變形、不裁切；懸停節點顯示名稱／類型／IP／MAC／狀態；每 10 秒自動更新

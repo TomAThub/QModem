@@ -11,8 +11,11 @@
 				"/proc/net/arp": [ "read" ],
 				"/proc/net/route": [ "read" ]
 			},
+			"exec": {
+				"/usr/libexec/luci-qmodem-topo-probe": true
+			},
 			"ubus": {
-				"file": [ "list", "read" ],
+				"file": [ "list", "read", "exec" ],
 				"luci-rpc": [ "getDHCPLeases", "getHostHints" ],
 				"iwinfo": [ "assoclist" ],
 				"network.wireless": [ "status" ],

@@ -25,6 +25,41 @@ function readFile(path) {
 	}).catch(function() { return ''; });
 }
 
+var callTopoProbe = rpc.declare({ object: 'file', method: 'exec', params: [ 'command', 'params' ], reject: true, nobatch: true });
+
+/* Wired liveness: ARP entries linger long after a client is gone, so the
+   page probes the candidates and only keeps addresses that answer a ping
+   or have a confirmed neighbour state. When the probe helper is missing
+   (old rpcd ACL or script absent) the page falls back to listing all. */
+var topoProbePath = '/usr/libexec/luci-qmodem-topo-probe',
+	topoAlive = {},
+	topoProbeOk = false;
+
+function probeWired(leaseRes, arpRaw) {
+	var ips = {}, cand = [];
+	(((leaseRes || {}).dhcp_leases) || []).forEach(function(l) { if (l && l.ipaddr) ips[l.ipaddr] = true; });
+	(((leaseRes || {}).dhcp6_leases) || []).forEach(function(l) { if (l && l.ipaddr) ips[l.ipaddr] = true; });
+	String(arpRaw || '').split('\n').slice(1).forEach(function(l) {
+		var p = l.trim().split(/\s+/);
+		if (p.length >= 6 && p[0] && p[3] && p[3] !== '(incomplete)')
+			ips[p[0]] = true;
+	});
+	Object.keys(ips).forEach(function(k) { cand.push(k); });
+	if (!cand.length)
+		return Promise.resolve();
+	return callTopoProbe(topoProbePath, cand).then(function(res) {
+		topoProbeOk = !!(res && typeof res.stdout === 'string' && Number(res.code) === 0);
+		if (!topoProbeOk)
+			return;
+		var now = Date.now();
+		res.stdout.split('\n').forEach(function(ip) {
+			ip = ip.trim();
+			if (ip)
+				topoAlive[ip] = now;
+		});
+	}).catch(function() { topoProbeOk = false; });
+}
+
 function truthy(v) {
 	return v === true || v === 1 || v === '1' || v === 'true';
 }
@@ -176,13 +211,16 @@ return view.extend({
 				readFile('/proc/net/route'),
 				L.resolveDefault(callDeviceStatus().catch(function() { return {}; }), {})
 			]).then(function(r) {
-				return Promise.all(r[3].map(function(net) {
-					var f = parseFloat(net.getFrequency() || '0');
-					return L.resolveDefault(net.getAssocList(), []).then(function(l) {
-						return { band: f >= 5 ? '5g' : '24g', list: l };
-					}).catch(function() { return { band: '24g', list: [] }; });
-				})).then(function(assocs) {
-					renderTopo(r[1], r[2], assocs, r[4], r[5], r[6], r[7], r[8]);
+				return Promise.all([
+					probeWired(r[2], r[6]),
+					Promise.all(r[3].map(function(net) {
+						var f = parseFloat(net.getFrequency() || '0');
+						return L.resolveDefault(net.getAssocList(), []).then(function(l) {
+							return { band: f >= 5 ? '5g' : '24g', list: l };
+						}).catch(function() { return { band: '24g', list: [] }; });
+					}))
+				]).then(function(x) {
+					renderTopo(r[1], r[2], x[1], r[4], r[5], r[6], r[7], r[8]);
 				});
 			}).catch(function() { });
 		}
@@ -307,6 +345,14 @@ return view.extend({
 				seenMac[k] = true;
 				wired.push({ mac: k, hostname: null, ip: p[0] });
 			});
+			/* drop wired candidates that failed the liveness probe during the
+			   recent polls; without a working probe helper keep them all */
+			if (topoProbeOk) {
+				var aliveNow = Date.now();
+				wired = wired.filter(function(w) {
+					return w.ip && topoAlive[w.ip] && (aliveNow - topoAlive[w.ip]) < 25000;
+				});
+			}
 			stations.forEach(function(s) { groups[s.band].push(s); });
 
 			/* vendor name chain: hostname, then static DHCP names, then the

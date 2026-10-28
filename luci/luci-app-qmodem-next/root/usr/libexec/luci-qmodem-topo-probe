@@ -1,0 +1,26 @@
+#!/bin/sh
+# Liveness probe used by the LuCI network topology view: prints back the
+# candidate addresses that are currently online, either because they answer
+# a single ICMP echo or because the kernel holds a confirmed neighbour entry
+# (recently verified traffic). ARP cache entries linger long after a client
+# disappeared, so the page filters its wired client list through this probe.
+
+alive=$(mktemp /tmp/.topo-probe.XXXXXX)
+
+for ip in "$@"; do
+	case "$ip" in
+	*:*:*)
+		(ping6 -c 1 -W 1 -n "$ip" >/dev/null 2>&1 && echo "$ip" >> "$alive") &
+		;;
+	[0-9]*.[0-9]*.[0-9]*.[0-9]*)
+		(ping -c 1 -W 1 -n "$ip" >/dev/null 2>&1 && echo "$ip" >> "$alive") &
+		;;
+	esac
+done
+wait
+
+ip -4 neigh show 2>/dev/null | awk '$NF ~ /^(REACHABLE|PROBE|DELAY)$/ { print $1 }' >> "$alive"
+ip -6 neigh show 2>/dev/null | awk '$NF ~ /^(REACHABLE|PROBE|DELAY)$/ { print $1 }' >> "$alive"
+
+sort -u "$alive"
+rm -f "$alive"
