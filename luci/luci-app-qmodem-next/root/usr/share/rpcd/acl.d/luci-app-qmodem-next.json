@@ -9,10 +9,8 @@
 				"/proc/net/if_inet6": [ "read" ],
 				"/proc/sys/kernel/hostname": [ "read" ],
 				"/proc/net/arp": [ "read" ],
-				"/proc/net/route": [ "read" ]
-			},
-			"exec": {
-				"/usr/libexec/luci-qmodem-topo-probe": true
+				"/proc/net/route": [ "read" ],
+				"/usr/libexec/luci-qmodem-topo-probe": [ "exec" ]
 			},
 			"ubus": {
 				"file": [ "list", "read", "exec" ],
