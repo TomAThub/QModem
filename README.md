@@ -25,6 +25,15 @@
 > - **相容性說明**：預編 ipk 綁定韌體的 `libubus`／`libubox` soname，**25.12 與 24.10 兩組不相通用**；其他 OpenWrt 版本請以對應版本的 SDK 自行編譯本 feed
 > - 風扇溫控（`luci-app-fan-ctrl`）與獨立版網路拓撲（`luci-app-net-topology`）不屬於本 repo 範圍，未收錄於上述目錄
 >
+> ### 介面截圖
+> **CPE 管理 — 總攬**（即時速率曲線、已連線裝置、WiFi 客戶端、數據機與 SIM 資訊）
+>
+> ![CPE 管理總攬](imgs/Qmodem_mod.png)
+>
+> **CPE 管理 — 網路拓撲**（Internet → 路由器 → 有線／WiFi 裝置分層，連線粗細反映各連結速率）
+>
+> ![網路拓撲](imgs/Qmodem_mod_2.png)
+>
 > ---
 
 # QModem
