@@ -27,6 +27,9 @@
 > - **相容性說明**：預編 ipk 綁定韌體的 `libubus`／`libubox` soname，**25.12 與 24.10 兩組不相通用**；其他 OpenWrt 版本請以對應版本的 SDK 自行編譯本 feed
 > - 風扇溫控（`luci-app-fan-ctrl`）與獨立版網路拓撲（`luci-app-net-topology`）不屬於本 repo 範圍，未收錄於上述目錄
 >
+> ### apk 套件（`apks/`，給 apk 管理的機器）
+> `apks/` 提供與 `ipks/` **相同建置**重新打包的 `.apk` 檔（官方 `apk mkpkg` 工具打包，格式與官方 OpenWrt 25.12 套件庫相同），供使用 **apk** 套件管理的 OpenWrt 25.12（`aarch64_cortex-a53`）機器直接安裝，無需自行編譯。內容為 qmodem 家族全部執行檔與 LuCI 介面／翻譯，另附 `luci-app-fan-ctrl`、`luci-app-net-topology` 的 apk 版（兩者原始碼仍不在本 repo 範圍）及供官方 25.12.0 補齊用的 `libubox20251208`／`libblobmsg-json20251208` 相容庫。套件未簽章，安裝需 `--allow-untrusted`；完整安裝步驟與相依說明見 `apks/README.md`。
+>
 > ### 介面截圖
 > **CPE 管理 — 總攬**（即時速率曲線、已連線裝置、WiFi 客戶端、數據機與 SIM 資訊）
 >
