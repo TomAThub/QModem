@@ -4,6 +4,37 @@
 # a single ICMP echo or because the kernel holds a confirmed neighbour entry
 # (recently verified traffic). ARP cache entries linger long after a client
 # disappeared, so the page filters its wired client list through this probe.
+#
+# With --names the script instead resolves a display name for each address,
+# first through a reverse DNS query against the default resolver, then
+# through the page title of the device web interface (LuCI titles carry the
+# host name), and prints "ip<TAB>name" lines for the ones that resolved.
+
+if [ "$1" = "--names" ]; then
+	shift
+	out=$(mktemp /tmp/.topo-probe.XXXXXX)
+	for ip in "$@"; do
+		case "$ip" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*)
+			(
+				rev=$(echo "$ip" | awk -F. '{print $4"."$3"."$2"."$1}')
+				n=$(nslookup -type=PTR "$rev" 2>/dev/null | tr '\n' ' ' | sed -n 's/.*name = \([^ ,;]*\).*/\1/p' | sed 's/\.$//' | head -1)
+				if [ -z "$n" ]; then
+					n=$(wget -q -t 1 -T 2 -O - "http://$ip/" 2>/dev/null | tr -d '\n\r' | sed -n 's/.*<title[^>]*>\([^<]*\)<\/title>.*/\1/p' | head -1)
+					n=$(echo "$n" | sed 's/[|:：]/\n/g' | sed 's/^ *//;s/ *$//' | grep -viE 'luci|openwrt' | grep -vE '^[0-9]+[-_.]' | awk 'length($0) > 1 && length($0) <= 64' | head -1)
+				else
+					n=$(echo "$n" | grep -vE '^[0-9]+[-_.]' | head -1)
+				fi
+				[ -n "$n" ] && printf '%s\t%s\n' "$ip" "$n" >> "$out"
+			) &
+			;;
+		esac
+	done
+	wait
+	cat "$out" 2>/dev/null
+	rm -f "$out"
+	exit 0
+fi
 
 alive=$(mktemp /tmp/.topo-probe.XXXXXX)
 

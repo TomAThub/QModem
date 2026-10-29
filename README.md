@@ -13,6 +13,7 @@
 >   - 連線粗細反映各連結實際速率：WiFi 客戶端取交談速率（assoclist tx/rx rate）、Internet 連線取 WAN 即時流量
 >   - 裝置偵測：DHCP 租約與 ARP 表合併（靜態 IP、未走 DHCP 的裝置同樣顯示），WiFi 客戶端取自各 radio assoclist
 >   - 有線裝置在線偵測：平行 ping 探測＋核心鄰居確認狀態（`ip neigh`）混合判斷，ARP 殘留紀錄中的離線裝置自動隱藏（探測元件缺失時自動退回顯示全部）；WiFi 端以即時 assoclist 為準
+>   - 裝置名稱反查：無 DHCP 名稱的裝置（靜態 IP、租約過期但仍關聯的 WiFi 客戶端）經反查 DNS 與裝置網頁標題取得主機名稱，結果快取、失敗 10 分鐘後重試；探測僅在開啟拓撲頁期間輪詢，關閉頁面即無任何背景負載
 >   - 裝置名稱解析鏈：DHCP hostname → 靜態租約名稱（`dhcp` host 段）→ LuCI 主機提示 → IP/MAC
 >   - Internet 在線狀態以 qmodem 撥號狀態為準（netifd 介面狀態備援）
 >   - 自適應版面：圖高隨裝置數、圖寬隨容器寬度調整，直式／橫式皆不變形、不裁切；懸停節點顯示名稱／類型／IP／MAC／狀態；每 10 秒自動更新

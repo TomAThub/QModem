@@ -35,8 +35,8 @@ var topoProbePath = '/usr/libexec/luci-qmodem-topo-probe',
 	topoAlive = {},
 	topoProbeOk = false;
 
-function probeWired(leaseRes, arpRaw) {
-	var ips = {}, cand = [];
+function topoCandidates(leaseRes, arpRaw) {
+	var ips = {};
 	(((leaseRes || {}).dhcp_leases) || []).forEach(function(l) { if (l && l.ipaddr) ips[l.ipaddr] = true; });
 	(((leaseRes || {}).dhcp6_leases) || []).forEach(function(l) { if (l && l.ipaddr) ips[l.ipaddr] = true; });
 	String(arpRaw || '').split('\n').slice(1).forEach(function(l) {
@@ -44,7 +44,11 @@ function probeWired(leaseRes, arpRaw) {
 		if (p.length >= 6 && p[0] && p[3] && p[3] !== '(incomplete)')
 			ips[p[0]] = true;
 	});
-	Object.keys(ips).forEach(function(k) { cand.push(k); });
+	return Object.keys(ips);
+}
+
+function probeWired(leaseRes, arpRaw) {
+	var cand = topoCandidates(leaseRes, arpRaw);
 	if (!cand.length)
 		return Promise.resolve();
 	return callTopoProbe(topoProbePath, cand).then(function(res) {
@@ -58,6 +62,39 @@ function probeWired(leaseRes, arpRaw) {
 				topoAlive[ip] = now;
 		});
 	}).catch(function() { topoProbeOk = false; });
+}
+
+/* Names for clients that never appear in a DHCP lease with a hostname
+   (static addresses, expired leases on still-associated stations): the
+   probe helper resolves them through reverse DNS or the page title of
+   the device web interface. Failures are retried after ten minutes. */
+var topoNames = {},
+	topoNameTried = {};
+
+function probeNames(leaseRes, arpRaw) {
+	var need = [], named = {};
+	(((leaseRes || {}).dhcp_leases) || []).forEach(function(l) { if (l && l.ipaddr && l.hostname) named[l.ipaddr] = true; });
+	(((leaseRes || {}).dhcp6_leases) || []).forEach(function(l) { if (l && l.ipaddr && l.hostname) named[l.ipaddr] = true; });
+	topoCandidates(leaseRes, arpRaw).forEach(function(ip) {
+		if (named[ip] || topoNames[ip])
+			return;
+		var tried = topoNameTried[ip];
+		if (tried && (Date.now() - tried) < 600000)
+			return;
+		topoNameTried[ip] = Date.now();
+		need.push(ip);
+	});
+	if (!need.length)
+		return Promise.resolve();
+	return callTopoProbe(topoProbePath, [ '--names' ].concat(need)).then(function(res) {
+		if (!res || typeof res.stdout !== 'string' || Number(res.code) !== 0)
+			return;
+		res.stdout.split('\n').forEach(function(l) {
+			var i = l.indexOf('\t');
+			if (i > 0)
+				topoNames[l.substring(0, i)] = l.substring(i + 1);
+		});
+	}).catch(function() { });
 }
 
 function truthy(v) {
@@ -213,6 +250,7 @@ return view.extend({
 			]).then(function(r) {
 				return Promise.all([
 					probeWired(r[2], r[6]),
+					probeNames(r[2], r[6]),
 					Promise.all(r[3].map(function(net) {
 						var f = parseFloat(net.getFrequency() || '0');
 						return L.resolveDefault(net.getAssocList(), []).then(function(l) {
@@ -220,7 +258,7 @@ return view.extend({
 						}).catch(function() { return { band: '24g', list: [] }; });
 					}))
 				]).then(function(x) {
-					renderTopo(r[1], r[2], x[1], r[4], r[5], r[6], r[7], r[8]);
+					renderTopo(r[1], r[2], x[2], r[4], r[5], r[6], r[7], r[8]);
 				});
 			}).catch(function() { });
 		}
@@ -338,7 +376,16 @@ return view.extend({
 				if (p.length < 6 || !p[3] || p[3] === '(incomplete)' || p[5] === 'lo')
 					return;
 				var k = p[3].toLowerCase();
-				if (stMac[k] || seenMac[k])
+				if (stMac[k]) {
+					/* borrow the address from the ARP table for associated
+					   clients without a lease so they can be named too */
+					if (!seenMac[k]) {
+						seenMac[k] = true;
+						stations.forEach(function(x) { if (x.mac.toLowerCase() === k && !x.ip) x.ip = p[0]; });
+					}
+					return;
+				}
+				if (seenMac[k])
 					return;
 				if (lanDev ? p[5] !== lanDev : (wanDev && p[5] === wanDev))
 					return;
@@ -364,7 +411,7 @@ return view.extend({
 
 			function devName(x) {
 				return x.hostname || staticHosts[x.mac] || hintName(x.mac) ||
-					x.ip || x.mac || '(未命名)';
+					topoNames[x.ip] || x.ip || x.mac || '(未命名)';
 			}
 
 			function devNode(p, n, x, conn) {
