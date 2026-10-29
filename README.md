@@ -5,7 +5,7 @@
 > ### luci-app-qmodem-next（CPE 管理）
 > - **儀表板重寫**：即時上傳/下載速率（netifd 為主、qmodem 統計為備援）、SVG 速率曲線圖、訊號強度與頻點/頻段顯示（內建 LTE EARFCN→頻段對照表；修正 quectel `AT+QGDNRCNT` 上傳/下載方向互換問題）
 > - **營運商名稱顯示**：內建 MCC-MNC 對照表，總覽頁與 ISP 徽章顯示電信商名稱
-> - **AT 快速指令與 APN 設定檔**：自訂 AT 指令及 APN 設定檔以 uci 儲存、列表顯示目前 APN、漫遊開關（`QNWPREFCFG`）
+> - **AT 快速指令與 APN 設定檔**：自訂 AT 指令及 APN 設定檔以 uci 儲存、列表顯示目前 APN、漫遊開關（`QNWPREFCFG`）、APN 快速設定浮動視窗（僅 APN／帳號／密碼／驗證方式，儲存後自動重新撥號）
 > - **簡訊修正**：DB 模式下「卡簡訊」刪除不再出現 `Invalid message index`（index 自動以資料庫 id 補上）；SMS 頁面路徑配合移至 `admin/cpe`
 > - **其他**：安裝後自動重啟 rpcd 使 ACL 立即生效、選單與權限（ACL）調整
 > - **網路拓撲圖**：CPE 管理新增「網路拓撲」分頁（`admin/cpe/topology`），以純 SVG 重現 Hiveton HigoOS 原生網路拓撲視圖（無外部 JS 圖庫）
@@ -38,6 +38,12 @@
 > **CPE 管理 — 網路拓撲**（Internet → 路由器 → 有線／WiFi 裝置分層，連線粗細反映各連結速率）
 >
 > ![網路拓撲](imgs/Qmodem_mod_2.png)
+>
+> **網路設定-新增漫遊開啟/關閉開關 及 APN快速設定 功能**
+>
+> ![網路設定](imgs/network_setting.png)
+>
+> ![APN 快速設定](imgs/apn_quick.png)
 >
 > ---
 
