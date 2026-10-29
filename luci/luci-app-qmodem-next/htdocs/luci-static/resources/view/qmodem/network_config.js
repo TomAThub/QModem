@@ -36,6 +36,125 @@ function uciCommit(conf) {
 	return uci.save().then(function() { return uci.apply(10); });
 }
 
+/* 快速 APN 設定浮動視窗：僅 APN／帳號／密碼／驗證方式 四個欄位。
+   寫入 uci qmodem modem-device 段；與 modem_dial.sh 一致，SIM slot 2
+   使用 apn2/username2/password2/auth2（未設定時退回 slot 1）。
+   commit 後 luci apply 觸發 qmodem_network reload 自動重新撥號。 */
+function openApnQuickModal(view, section_id) {
+	var isSlot2 = String(uci.get('qmodem', section_id, 'sim_slot') || '') === '2';
+	var kApn = isSlot2 ? 'apn2' : 'apn';
+	var kAuth = isSlot2 ? 'auth2' : 'auth';
+	var kUser = isSlot2 ? 'username2' : 'username';
+	var kPass = isSlot2 ? 'password2' : 'password';
+
+	/* slot2 讀值退回 slot1（同撥號腳本行為） */
+	function cfg(name, fallback) {
+		var v = uci.get('qmodem', section_id, name);
+		if ((v == null || v === '') && fallback)
+			v = uci.get('qmodem', section_id, fallback);
+		return v == null ? '' : String(v);
+	}
+
+	var auth = cfg(kAuth, isSlot2 ? 'auth' : null);
+	if (['none', 'pap', 'chap', 'MsChapV2'].indexOf(auth) < 0)
+		auth = 'none';
+
+	var inpStyle = 'width:100%;box-sizing:border-box';
+	var inpApn = E('input', {
+		'type': 'text',
+		'style': inpStyle,
+		'placeholder': '留空 = 自動選擇',
+		'value': cfg(kApn, isSlot2 ? 'apn' : null)
+	});
+	var selAuth = E('select', { 'style': inpStyle }, [
+		E('option', { 'value': 'none' }, '不驗證'),
+		E('option', { 'value': 'pap' }, 'PAP'),
+		E('option', { 'value': 'chap' }, 'CHAP'),
+		E('option', { 'value': 'MsChapV2' }, 'MsChapV2')
+	]);
+	selAuth.value = auth;
+	var inpUser = E('input', { 'type': 'text', 'style': inpStyle, 'value': cfg(kUser, isSlot2 ? 'username' : null) });
+	var inpPass = E('input', { 'type': 'password', 'style': inpStyle, 'value': cfg(kPass, isSlot2 ? 'password' : null) });
+
+	/* 已存 APN 設定檔當建議清單 */
+	var dl = E('datalist', { 'id': 'apn-quick-profiles' });
+	uci.sections('cpe-dashboard', 'apn_profile').forEach(function(p) {
+		if (p.apn)
+			dl.appendChild(E('option', { 'value': p.apn }, p.name || ''));
+	});
+	inpApn.setAttribute('list', 'apn-quick-profiles');
+
+	function row(label, input) {
+		return E('div', { 'style': 'margin:10px 0' }, [
+			E('label', { 'style': 'display:block;font-weight:600;margin-bottom:3px' }, label),
+			input
+		]);
+	}
+	var userRow = row('帳號', inpUser);
+	var passRow = row('密碼', inpPass);
+	function toggleAuth() {
+		var hide = selAuth.value === 'none';
+		userRow.style.display = hide ? 'none' : '';
+		passRow.style.display = hide ? 'none' : '';
+	}
+	selAuth.addEventListener('change', toggleAuth);
+
+	var btnApply = E('button', { 'class': 'btn cbi-button-positive', 'style': 'margin-left:6px' }, '儲存並重新撥號');
+	var btnCancel = E('button', { 'class': 'btn cbi-button-negative' }, '取消');
+	btnCancel.addEventListener('click', function() { ui.hideModal(); });
+	inpApn.addEventListener('keydown', function(ev) {
+		if (ev.key === 'Enter')
+			btnApply.click();
+	});
+
+	btnApply.addEventListener('click', function() {
+		var apn = String(inpApn.value).trim();
+		var a = selAuth.value;
+		var user = String(inpUser.value).trim();
+		var pass = inpPass.value;
+
+		btnApply.classList.add('disabled');
+		if (apn)
+			uci.set('qmodem', section_id, kApn, apn);
+		else
+			uci.unset('qmodem', section_id, kApn);
+		uci.set('qmodem', section_id, kAuth, a);
+		if (a !== 'none' && user)
+			uci.set('qmodem', section_id, kUser, user);
+		else
+			uci.unset('qmodem', section_id, kUser);
+		if (a !== 'none' && pass)
+			uci.set('qmodem', section_id, kPass, pass);
+		else
+			uci.unset('qmodem', section_id, kPass);
+
+		return uciCommit('qmodem').then(function() {
+			ui.hideModal();
+			apnNotify('APN 設定已儲存，正在重新撥號（約需數十秒）', 'ok');
+			if (view && view.updateApnDisplay)
+				view.updateApnDisplay(section_id);
+		}).catch(function(err) {
+			btnApply.classList.remove('disabled');
+			apnNotify('儲存失敗: ' + (err && err.message ? err.message : err), 'error');
+		});
+	});
+
+	var modemName = uci.get('qmodem', section_id, 'alias') || uci.get('qmodem', section_id, 'name') || section_id;
+	ui.showModal('快速設定 APN — ' + modemName + (isSlot2 ? '（SIM 2）' : ''), E('div', {}, [
+		E('div', {}, [
+			E('div', { 'style': 'color:#888;font-size:12px' }, '僅顯示常用項目；完整選項請點擊該列進行編輯。'),
+			row('APN', inpApn),
+			dl,
+			row('驗證方式', selAuth),
+			userRow,
+			passRow
+		]),
+		E('div', { 'class': 'right', 'style': 'margin-top:12px' }, [btnCancel, btnApply])
+	]));
+	toggleAuth();
+	inpApn.focus();
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
@@ -327,10 +446,24 @@ return view.extend({
 	o = s.option(form.DummyValue, '_cur_apn', '目前 APN');
 	o.rawhtml = true;
 	o.editable = true;
-	o.cfgvalue = function(section_id) {
+	o.cfgvalue = L.bind(function(section_id) {
 		var cfg = uci.get('qmodem', section_id, 'apn') || '';
-		return E('span', { 'class': 'cur-apn', 'data-section': section_id, 'style': 'word-break:break-all' }, cfg || '自動選擇');
-	};
+		var self = this;
+		var btn = E('button', {
+			'class': 'btn cbi-button-positive apn-quick-btn',
+			'style': 'display:block;margin-top:5px;padding:2px 10px;font-size:12px',
+			'title': '快速設定 APN／帳號／密碼／驗證方式'
+		}, '快速設定');
+		btn.addEventListener('click', function(ev) {
+			ev.preventDefault();
+			ev.stopPropagation();
+			openApnQuickModal(self, section_id);
+		});
+		return E('div', {}, [
+			E('span', { 'class': 'cur-apn', 'data-section': section_id, 'style': 'word-break:break-all' }, cfg || '自動選擇'),
+			btn
+		]);
+	}, this);
 
 	// Roaming on/off switch (Quectel AT+QNWPREFCFG="roam_pref")
 	o = s.option(form.DummyValue, '_roaming', '漫遊');
