@@ -188,6 +188,13 @@ function gradeRsrp(v) { return v >= -80 ? 0 : v >= -90 ? 1 : v >= -100 ? 2 : 3; 
 function gradeRsrq(v) { return v >= -10 ? 0 : v >= -15 ? 1 : v >= -20 ? 2 : 3; }
 function gradeSinr(v) { return v >= 20 ? 0 : v >= 13 ? 1 : v >= 0 ? 2 : 3; }
 
+/* 訊號卡片進度條範圍與配色（min=左端、max=右端，對照 HigoOS 原生刻度） */
+var SIG_RANGES = {
+	RSRP: { min: -120, max: -75, color: 'blue', lo: '弱 -120', hi: '-75 強' },
+	RSRQ: { min: -20, max: -3, color: 'orange', lo: '差 -20', hi: '-3 好' },
+	SINR: { min: -5, max: 30, color: 'green', lo: '差 -5', hi: '30 好' }
+};
+
 function overallGrade(vals) {
 	var g = [];
 	for (var i = 0; i < vals.length; i++) {
@@ -804,6 +811,15 @@ return view.extend({
 					v.value.textContent = val == null ? '--' : String(val);
 					v.unit.textContent = unit ? ' ' + unit : '';
 					domContent(v.badge, grade == null ? badge('無資料', 'mid') : badge(GRADE_LABELS[grade], GRADE_CLASS[grade]));
+					/* 進度條：數值對應刻度範圍的百分比位置 */
+					var r = SIG_RANGES[key], pct = 0;
+					if (val != null) {
+						pct = (val - r.min) / (r.max - r.min) * 100;
+						pct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+					}
+					v.fill.style.width = pct.toFixed(1) + '%';
+					v.knob.style.left = pct.toFixed(1) + '%';
+					v.knob.style.display = val == null ? 'none' : '';
 				}
 				sigCard('RSRP', rsrp, 'dBm', gR);
 				sigCard('RSRQ', rsrq, 'dB', gQ);
@@ -849,11 +865,19 @@ return view.extend({
 		}
 
 		function sigCardEl(key) {
+			var r = SIG_RANGES[key];
 			var value = E('span'), unit = E('small'), badgeEl = E('span');
-			refs.sigCards[key] = { value: value, unit: unit, badge: badgeEl };
-			return card(SIG_TITLES[key], [
+			var fill = E('div', { 'class': 'fill ' + r.color });
+			var knob = E('div', { 'class': 'knob ' + r.color });
+			refs.sigCards[key] = { value: value, unit: unit, badge: badgeEl, fill: fill, knob: knob };
+			return E('div', { 'class': 'cpe-card' }, [
+				E('div', { 'class': 'cpe-card-head' }, [
+					E('div', { 'class': 'cpe-card-title', 'title': SIG_TITLES[key] }, key),
+					badgeEl
+				]),
 				E('div', { 'class': 'cpe-card-value' }, value, unit),
-				badgeEl
+				E('div', { 'class': 'cpe-sigbar' }, [fill, knob]),
+				E('div', { 'class': 'cpe-sig-scale' }, [E('span', r.lo), E('span', r.hi)])
 			]);
 		}
 

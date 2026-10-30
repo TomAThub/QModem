@@ -129,3 +129,55 @@
 
 .cpe-quality-legend { font-size: 12px; opacity: 0.75; margin-top: 10px; }
 .cpe-quality-legend .cpe-badge { margin-right: 6px; }
+
+/* 訊號卡片：標題列（徽章置右）＋進度條樣式 */
+.cpe-card-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 8px;
+}
+
+.cpe-sigbar {
+	position: relative;
+	height: 8px;
+	border-radius: 4px;
+	background: rgba(128, 128, 128, 0.25);
+	margin: 16px 9px 8px 1px;
+}
+
+.cpe-sigbar .fill {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	border-radius: 4px;
+	width: 0;
+	transition: width 0.4s ease;
+}
+
+.cpe-sigbar .knob {
+	position: absolute;
+	top: 50%;
+	left: 0;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	transform: translate(-50%, -50%);
+	border: 2px solid #fff;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+	transition: left 0.4s ease;
+}
+
+.dark .cpe-sigbar .knob { border-color: #262a30; }
+
+.cpe-sigbar .fill.blue, .cpe-sigbar .knob.blue { background: #4c7ee0; }
+.cpe-sigbar .fill.orange, .cpe-sigbar .knob.orange { background: #e09a2f; }
+.cpe-sigbar .fill.green, .cpe-sigbar .knob.green { background: #3aa062; }
+
+.cpe-sig-scale {
+	display: flex;
+	justify-content: space-between;
+	font-size: 11px;
+	opacity: 0.6;
+}
